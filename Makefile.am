@@ -6,6 +6,8 @@ SUBDIRS = \
 	src \
 	doc
 
+AM_LDFLAGS = -lstdc++
+
 dist_pkginclude_HEADERS = \
 	dovecot-version.h
 

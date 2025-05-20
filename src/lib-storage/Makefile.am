@@ -116,6 +116,7 @@ shlibs = \
 	index/maildir/libstorage_maildir.la \
 	index/mbox/libstorage_mbox.la \
 	index/imapc/libstorage_imapc.la \
+	index/exmdbc/libstorage_exmdbc.la \
 	../lib-imap-client/libimap_client.la \
 	index/pop3c/libstorage_pop3c.la \
 	index/raw/libstorage_raw.la \
@@ -180,27 +181,33 @@ test_libs = \
 	$(top_builddir)/src/lib/liblib.la
 
 test_mail_search_args_imap_SOURCES = test-mail-search-args-imap.c
-test_mail_search_args_imap_LDADD = libstorage.la $(LIBDOVECOT)
+test_mail_search_args_imap_LDADD = libstorage.la $(LIBDOVECOT) \
+                                                                -lstdc++
 test_mail_search_args_imap_DEPENDENCIES = libstorage.la $(LIBDOVECOT_DEPS)
 
 test_mail_search_args_simplify_SOURCES = test-mail-search-args-simplify.c
-test_mail_search_args_simplify_LDADD = libstorage.la $(LIBDOVECOT)
+test_mail_search_args_simplify_LDADD = libstorage.la $(LIBDOVECOT) \
+                                                                    -lstdc++
 test_mail_search_args_simplify_DEPENDENCIES = libstorage.la $(LIBDOVECOT_DEPS)
 
 test_mailbox_get_SOURCES = test-mailbox-get.c
-test_mailbox_get_LDADD = mailbox-get.lo $(test_libs)
+test_mailbox_get_LDADD = mailbox-get.lo $(test_libs) \
+                                                      -lstdc++
 test_mailbox_get_DEPENDENCIES = $(noinst_LTLIBRARIES) $(test_libs)
 
 test_mail_SOURCES = test-mail.c
-test_mail_LDADD = libstorage.la $(LIBDOVECOT)
+test_mail_LDADD = libstorage.la $(LIBDOVECOT) \
+                                               -lstdc++
 test_mail_DEPENDENCIES = libstorage.la $(LIBDOVECOT_DEPS)
 
 test_mail_storage_SOURCES = test-mail-storage.c
-test_mail_storage_LDADD = libstorage.la $(LIBDOVECOT)
+test_mail_storage_LDADD = libstorage.la $(LIBDOVECOT) \
+                                                       -lstdc++
 test_mail_storage_DEPENDENCIES = libstorage.la $(LIBDOVECOT_DEPS)
 
 test_mailbox_list_SOURCES = test-mailbox-list.c
-test_mailbox_list_LDADD = libstorage.la $(LIBDOVECOT)
+test_mailbox_list_LDADD = libstorage.la $(LIBDOVECOT) \
+                                                       -lstdc++
 test_mailbox_list_DEPENDENCIES = libstorage.la $(LIBDOVECOT_DEPS)
 
 check-local:
