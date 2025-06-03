@@ -15,19 +15,6 @@
 
 #define NOTIFY_DELAY_MSECS 500
 
-static void exmdbc_mailbox_close(struct mailbox *box)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_close called\n");
-	struct exmdbc_mailbox *mbox = (struct exmdbc_mailbox *)box;
-
-	i_info("exmdbc_mailbox_close(): '%s'", box->name);
-
-	//TODO:EXMDB: close mailbox
-//	if (mbox->storage->client != NULL) {
-//		exmdb_client_free(&mbox->storage->client);
-//	}
-}
-
 void exmdbc_mailbox_set_corrupted(struct exmdbc_mailbox *mbox,
 				 const char *reason, ...)
 {
@@ -154,29 +141,6 @@ int exmdbc_mailbox_commit_delayed_trans(struct exmdbc_mailbox *mbox,
 	return ret;
 }
 
-static void exmdbc_mailbox_idle_timeout(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_idle_timeout called\n");
-	timeout_remove(&mbox->to_idle_delay);
-	if (mbox->box.notify_callback != NULL)
-		mbox->box.notify_callback(&mbox->box, mbox->box.notify_context);
-}
-
-static void exmdbc_mailbox_idle_notify(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_idle_notify called\n");
-	struct ioloop *old_ioloop = current_ioloop;
-
-	if (mbox->box.notify_callback != NULL &&
-	    mbox->to_idle_delay == NULL) {
-		io_loop_set_current(mbox->storage->root_ioloop);
-		mbox->to_idle_delay =
-			timeout_add_short(NOTIFY_DELAY_MSECS,
-					  exmdbc_mailbox_idle_timeout, mbox);
-		io_loop_set_current(old_ioloop);
-	}
-}
-
 static void
 exmdbc_mailbox_index_expunge(struct exmdbc_mailbox *mbox, uint32_t uid)
 {
@@ -229,19 +193,6 @@ exmdbc_mailbox_fetch_state_finish(struct exmdbc_mailbox *mbox)
 	mbox->state_fetched_success = TRUE;
 }
 
-static void
-exmdbc_mailbox_fetch_state_callback(const struct exmdbc_command_reply *reply,
-				   void *context)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_fetch_state_callback called\n");
-	struct exmdbc_mailbox *mbox = context;
-
-	mbox->state_fetching_uid1 = FALSE;
-	mbox->delayed_untagged_exists = FALSE;
-	//TODO:EXMDB:exmdbc_client_stop(mbox->storage->client->client);
-
-}
-
 void exmdbc_mailbox_select_finish(struct exmdbc_mailbox *mbox)
 {
 	fprintf(stdout, "!!! exmdbc_mailbox_select_finish called\n");
@@ -260,17 +211,41 @@ void exmdbc_mailbox_select_finish(struct exmdbc_mailbox *mbox)
 bool
 exmdbc_mailbox_fetch_state(struct exmdbc_mailbox *mbox, uint32_t first_uid)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_fetch_state called\n");
-
-	return FALSE;
-}
-
-static void
-exmdbc_untagged_exists(const struct exmdbc_untagged_reply *reply,
-		      struct exmdbc_mailbox *mbox)
-{
-
-	fprintf(stdout, "!!! exmdbc_untagged_exists called\n");
+	// fprintf(stdout, "!!! exmdbc_mailbox_fetch_state called\n");
+	//
+	// if (mbox->exists_count == 0) {
+	// 	/* empty mailbox - no point in fetching anything.
+	// 	   just make sure everything is expunged in local index.
+	// 	   Delay calling imapc_mailbox_fetch_state_finish() until
+	// 	   SELECT finishes, so we see the updated UIDNEXT. */
+	// 	return FALSE;
+	// }
+	// if (mbox->state_fetching_uid1) {
+	// 	/* retrying after reconnection - don't send duplicate */
+	// 	return FALSE;
+	// }
+	//
+	// string_t *str = t_str_new(64);
+	// str_printfa(str, "UID FETCH %u:* (FLAGS", first_uid);
+	// if (exmdbc_mailbox_has_modseqs(mbox)) {
+	// 	str_append(str, " MODSEQ");
+	// 	mail_index_modseq_enable(mbox->box.index);
+	// }
+	// str_append_c(str, ')');
+	//
+	// cmd = imapc_client_mailbox_cmd(mbox->client_box,
+	// 	imapc_mailbox_fetch_state_callback, mbox);
+	// if (first_uid == 1) {
+	// 	mbox->sync_next_lseq = 1;
+	// 	mbox->sync_next_rseq = 1;
+	// 	mbox->state_fetched_success = FALSE;
+	// 	/* only the FETCH 1:* is retriable - others will be retried
+	// 	   by the 1:* after the reconnection */
+	// 	imapc_command_set_flags(cmd, IMAPC_COMMAND_FLAG_RETRIABLE);
+	// }
+	// mbox->state_fetching_uid1 = first_uid == 1;
+	// imapc_command_send(cmd, str_c(str));
+	// return TRUE;
 }
 
 static bool keywords_are_equal(struct mail_keywords *kw,
@@ -280,17 +255,6 @@ static bool keywords_are_equal(struct mail_keywords *kw,
 	fprintf(stdout, "!!! keywords_are_equal called\n");
 
 	return FALSE;
-}
-
-static int
-exmdbc_mailbox_msgmap_update(struct exmdbc_mailbox *mbox,
-			    uint32_t rseq, uint32_t fetch_uid,
-			    uint32_t *lseq_r, uint32_t *uid_r,
-			    bool *new_message_r)
-{
-
-	fprintf(stdout, "!!! exmdbc_mailbox_msgmap_update called\n");
-	return 0;
 }
 
 bool exmdbc_mailbox_name_equals(struct exmdbc_mailbox *mbox,
@@ -309,17 +273,6 @@ bool exmdbc_mailbox_name_equals(struct exmdbc_mailbox *mbox,
 		return TRUE;
 	}
 	return FALSE;
-}
-
-static struct exmdbc_untagged_fetch_ctx *
-exmdbc_untagged_fetch_ctx_create(void)
-{
-	fprintf(stdout, "!!! exmdbc_untagged_fetch_ctx_create called\n");
-	pool_t pool = pool_alloconly_create("exmdbc untagged fetch ctx", 128);
-	struct exmdbc_untagged_fetch_ctx *ctx =
-		p_new(pool, struct exmdbc_untagged_fetch_ctx, 1);
-	ctx->pool = pool;
-	return ctx;
 }
 
 void exmdbc_untagged_fetch_ctx_free(struct exmdbc_untagged_fetch_ctx **_ctx)
@@ -374,148 +327,6 @@ void exmdbc_untagged_fetch_update_flags(struct exmdbc_mailbox *mbox,
 	mail_index_keywords_unref(&kw);
 }
 
-static bool exmdbc_untagged_fetch_handle(struct exmdbc_mailbox *mbox,
-					struct exmdbc_untagged_fetch_ctx *ctx,
-					uint32_t rseq)
-{
-
-	fprintf(stdout, "!!! exmdbc_untagged_fetch_handle called\n");
-	return FALSE;
-}
-
-static bool exmdbc_untagged_fetch_parse(struct exmdbc_mailbox *mbox,
-				       struct exmdbc_untagged_fetch_ctx *ctx,
-				       const struct imap_arg *list)
-{
-
-	fprintf(stdout, "!!! exmdbc_untagged_fetch_parse called\n");
-	return FALSE;
-}
-
-static void exmdbc_untagged_fetch(const struct exmdbc_untagged_reply *reply,
-				 struct exmdbc_mailbox *mbox)
-{
-
-	fprintf(stdout, "!!! exmdbc_untagged_fetch called\n");
-}
-
-static void exmdbc_untagged_expunge(const struct exmdbc_untagged_reply *reply,
-				   struct exmdbc_mailbox *mbox)
-{
-
-	fprintf(stdout, "!!! exmdbc_untagged_expunge called\n");
-}
-
-static void
-exmdbc_untagged_esearch_gmail_pop3(const struct imap_arg *args,
-				  struct exmdbc_mailbox *mbox)
-{
-
-	fprintf(stdout, "!!! exmdbc_untagged_esearch_gmail_pop3 called\n");
-}
-
-static void exmdbc_untagged_search(const struct exmdbc_untagged_reply *reply,
-				  struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_untagged_search called\n");
-	if (mbox == NULL)
-		return;
-	if (!EXMDBC_MAILBOX_IS_FULLY_SELECTED(mbox)) {
-		/* SELECTing another mailbox - this SEARCH is still for the
-		   previous selected mailbox. */
-		return;
-	}
-	exmdbc_search_reply_search(reply->args, mbox);
-}
-
-static void exmdbc_untagged_esearch(const struct exmdbc_untagged_reply *reply,
-				   struct exmdbc_mailbox *mbox)
-{
-
-	fprintf(stdout, "!!! exmdbc_untagged_esearch called\n");
-}
-
-static void exmdbc_sync_uid_validity(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_sync_uid_validity called\n");
-	const struct mail_index_header *hdr;
-
-	exmdbc_mailbox_init_delayed_trans(mbox);
-	hdr = mail_index_get_header(mbox->delayed_sync_view);
-	if (hdr->uid_validity != mbox->sync_uid_validity &&
-	    mbox->sync_uid_validity != 0) {
-		if (hdr->uid_validity != 0) {
-			/* uidvalidity changed, reset the entire mailbox */
-			mail_index_reset(mbox->delayed_sync_trans);
-			mbox->sync_fetch_first_uid = 1;
-			/* The reset needs to be committed before FETCH 1:*
-			   results are received. */
-			bool changes;
-			if (exmdbc_mailbox_commit_delayed_trans(mbox, TRUE, &changes) < 0)
-				mail_index_mark_corrupted(mbox->box.index);
-			exmdbc_mailbox_init_delayed_trans(mbox);
-		}
-		mail_index_update_header(mbox->delayed_sync_trans,
-			offsetof(struct mail_index_header, uid_validity),
-			&mbox->sync_uid_validity,
-			sizeof(mbox->sync_uid_validity), TRUE);
-	}
-}
-
-static void
-exmdbc_resp_text_uidvalidity(const struct exmdbc_untagged_reply *reply,
-			    struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_resp_text_uidvalidity called\n");
-	uint32_t uid_validity;
-
-	if (mbox == NULL ||
-	    str_to_uint32(reply->resp_text_value, &uid_validity) < 0 ||
-	    uid_validity == 0)
-		return;
-
-	if (mbox->sync_uid_validity != uid_validity) {
-		mbox->sync_uid_validity = uid_validity;
-		exmdbc_mail_cache_free(&mbox->prev_mail_cache);
-		exmdbc_sync_uid_validity(mbox);
-	}
-}
-
-static void
-exmdbc_resp_text_uidnext(const struct exmdbc_untagged_reply *reply,
-			struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_resp_text_uidnext called\n");
-	uint32_t uid_next;
-
-	if (mbox == NULL ||
-	    str_to_uint32(reply->resp_text_value, &uid_next) < 0)
-		return;
-
-	mbox->sync_uid_next = uid_next;
-}
-
-static void
-exmdbc_resp_text_highestmodseq(const struct exmdbc_untagged_reply *reply,
-			      struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_resp_text_highestmodseq called\n");
-	uint64_t highestmodseq;
-
-	if (mbox == NULL ||
-	    str_to_uint64(reply->resp_text_value, &highestmodseq) < 0)
-		return;
-
-	mbox->sync_highestmodseq = highestmodseq;
-}
-
-static void
-exmdbc_resp_text_permanentflags(const struct exmdbc_untagged_reply *reply,
-			       struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_resp_text_permanentflags called\n");
-}
-
 void exmdbc_mailbox_register_untagged(struct exmdbc_mailbox *mbox,
 				     const char *key,
 				     exmdbc_mailbox_callback_t *callback)
@@ -558,24 +369,25 @@ bool exmdbc_mailbox_has_modseqs(struct exmdbc_mailbox *mbox)
 
 void exmdbc_mailbox_register_callbacks(struct exmdbc_mailbox *mbox)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_register_callbacks called\n");
-	exmdbc_mailbox_register_untagged(mbox, "EXISTS",
-					exmdbc_untagged_exists);
-	exmdbc_mailbox_register_untagged(mbox, "FETCH",
-					exmdbc_untagged_fetch);
-	exmdbc_mailbox_register_untagged(mbox, "EXPUNGE",
-					exmdbc_untagged_expunge);
-	exmdbc_mailbox_register_untagged(mbox, "SEARCH",
-					exmdbc_untagged_search);
-	exmdbc_mailbox_register_untagged(mbox, "ESEARCH",
-					exmdbc_untagged_esearch);
-	exmdbc_mailbox_register_resp_text(mbox, "UIDVALIDITY",
-					 exmdbc_resp_text_uidvalidity);
-	exmdbc_mailbox_register_resp_text(mbox, "UIDNEXT",
-					 exmdbc_resp_text_uidnext);
-	exmdbc_mailbox_register_resp_text(mbox, "HIGHESTMODSEQ",
-					 exmdbc_resp_text_highestmodseq);
-	exmdbc_mailbox_register_resp_text(mbox, "PERMANENTFLAGS",
-					 exmdbc_resp_text_permanentflags);
+	//Remove this in the end. We are not using imapc_client and not sending cmds anymore so we don't need untagged reply more
+	// fprintf(stdout, "!!! exmdbc_mailbox_register_callbacks called\n");
+	// exmdbc_mailbox_register_untagged(mbox, "EXISTS",
+	// 				exmdbc_untagged_exists);
+	// exmdbc_mailbox_register_untagged(mbox, "FETCH",
+	// 				exmdbc_untagged_fetch);
+	// exmdbc_mailbox_register_untagged(mbox, "EXPUNGE",
+	// 				exmdbc_untagged_expunge);
+	// exmdbc_mailbox_register_untagged(mbox, "SEARCH",
+	// 				exmdbc_untagged_search);
+	// exmdbc_mailbox_register_untagged(mbox, "ESEARCH",
+	// 				exmdbc_untagged_esearch);
+	// exmdbc_mailbox_register_resp_text(mbox, "UIDVALIDITY",
+	// 				 exmdbc_resp_text_uidvalidity);
+	// exmdbc_mailbox_register_resp_text(mbox, "UIDNEXT",
+	// 				 exmdbc_resp_text_uidnext);
+	// exmdbc_mailbox_register_resp_text(mbox, "HIGHESTMODSEQ",
+	// 				 exmdbc_resp_text_highestmodseq);
+	// exmdbc_mailbox_register_resp_text(mbox, "PERMANENTFLAGS",
+	// 				 exmdbc_resp_text_permanentflags);
 }
 

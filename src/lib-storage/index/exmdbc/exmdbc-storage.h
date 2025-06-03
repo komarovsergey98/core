@@ -8,78 +8,6 @@
 #define EXMDBC_STORAGE(s)	container_of(s, struct exmdbc_storage, storage)
 #define EXMDBC_MAILBOX(s)	container_of(s, struct exmdbc_mailbox, box)
 
-
-//TODO:EXMDBC:remove this
-
-enum exmdbc_command_state {
-	EXMDBC_COMMAND_STATE_OK = 0,
-	EXMDBC_COMMAND_STATE_NO,
-	EXMDBC_COMMAND_STATE_BAD,
-	/* Authentication to EXMDB server failed (NO or BAD) */
-	EXMDBC_COMMAND_STATE_AUTH_FAILED,
-	/* Client was unexpectedly disconnected. */
-	EXMDBC_COMMAND_STATE_DISCONNECTED
-};
-enum exmdbc_arg_type {
-	EXMDB_ARG_NIL = 0,
-	EXMDB_ARG_ATOM,
-	EXMDB_ARG_STRING,
-	EXMDB_ARG_LIST,
-
-	/* literals are returned as EXMDB_ARG_STRING by default */
-	EXMDB_ARG_LITERAL,
-	EXMDB_ARG_LITERAL_SIZE,
-	EXMDB_ARG_LITERAL_SIZE_NONSYNC,
-
-	EXMDB_ARG_EOL /* end of argument list */
-};
-
-struct exmdbc_command_reply {
-	enum exmdbc_command_state state;
-	/* "[RESP TEXT]" produces key=RESP, value=TEXT.
-	   "[RESP]" produces key=RESP, value=NULL
-	   otherwise both are NULL */
-	const char *resp_text_key, *resp_text_value;
-	/* The full tagged reply, including [RESP TEXT]. */
-	const char *text_full;
-	/* Tagged reply text without [RESP TEXT] */
-	const char *text_without_resp;
-};
-
-struct exmdbc_arg_file {
-	/* file descriptor containing the value */
-	int fd;
-
-	/* parent_arg.list[list_idx] points to the EXMDB_ARG_LITERAL_SIZE
-	   argument */
-	const struct exmdbc_arg *parent_arg;
-	unsigned int list_idx;
-};
-
-struct exmdbc_untagged_reply {
-	/* name of the untagged reply, e.g. EXISTS */
-	const char *name;
-	/* number at the beginning of the reply, or 0 if there wasn't any.
-	   Set for EXISTS, EXPUNGE, etc. */
-	uint32_t num;
-	/* the rest of the reply can be read from these args. */
-	const struct imap_arg *args;
-	/* arguments whose contents are stored into files. only
-	   "FETCH (BODY[" arguments can be here. */
-	const struct exmdbc_arg_file *file_args;
-	unsigned int file_args_count;
-
-	/* "* OK [RESP TEXT]" produces key=RESP, value=TEXT.
-	   "* OK [RESP]" produces key=RESP, value=NULL
-	   otherwise both are NULL */
-	const char *resp_text_key, *resp_text_value;
-
-	/* If this reply occurred while a mailbox was selected, this contains
-	   the mailbox's untagged_context. */
-	void *untagged_box_context;
-};
-
-
 struct exmdbc_mailbox;
 
 typedef void exmdbc_storage_callback_t(const struct imapc_untagged_reply *reply,
@@ -125,10 +53,6 @@ struct exmdbc_storage_client {
 	struct exmdbc_mailbox_list *_list;
 
 	struct exmdb_client *client;
-
-	/* EXMDBC_COMMAND_STATE_OK if no auth failure (yet), otherwise result to
-	   the LOGIN/AUTHENTICATE command. */
-	enum exmdbc_command_state auth_failed_state;
 	char *auth_failed_reason;
 
 	/* Authentication reply was received (success or failure) */
@@ -165,7 +89,7 @@ struct exmdbc_mailbox {
 	struct mailbox box;
 	struct exmdbc_storage *storage;
 	struct exmdbc_client_mailbox *client_box;
-
+	uint64_t folder_id;
 
 	struct mail_index_transaction *delayed_sync_trans;
 	struct mail_index_view *sync_view, *delayed_sync_view;
@@ -274,7 +198,6 @@ void exmdbc_storage_client_create(struct mailbox_list *list,
                                   const char **error_r);
 
 void exmdbc_storage_client_unref(struct exmdbc_storage_client **client);
-bool exmdbc_storage_client_handle_auth_failure(struct exmdbc_storage_client *client);
 
 struct mail_save_context *
 exmdbc_save_alloc(struct mailbox_transaction_context *_t);

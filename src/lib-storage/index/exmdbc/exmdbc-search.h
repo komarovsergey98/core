@@ -12,9 +12,4 @@ exmdbc_search_init(struct mailbox_transaction_context *t,
 bool exmdbc_search_next_update_seq(struct mail_search_context *ctx);
 int exmdbc_search_deinit(struct mail_search_context *ctx);
 
-void exmdbc_search_reply_search(const struct exmdbc_arg *args,
-				   struct exmdbc_mailbox *mbox);
-void exmdbc_search_reply_esearch(const struct exmdbc_arg *args,
-				struct exmdbc_mailbox *mbox);
-
 #endif

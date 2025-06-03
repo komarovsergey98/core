@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include <exmdb_client_c.h>
+#include <hash.h>
 
 #include "exmdbc-mailbox.h"
 #include "exmdbc-attribute.h"
@@ -164,6 +165,8 @@ exmdbc_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	pool_t pool = pool_alloconly_create("exmdbc mailbox", 4096);
 	struct exmdbc_mailbox *mbox = p_new(pool, struct exmdbc_mailbox, 1);
 
+	struct exmdbc_mailbox_list *_list = (struct exmdbc_mailbox_list *)list;
+
 	mbox->box = exmdbc_mailbox;
 	mbox->box.pool = pool;
 	mbox->box.storage = storage;
@@ -171,14 +174,44 @@ exmdbc_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.flags = flags;
 	mbox->box.mail_vfuncs = &exmdbc_mail_vfuncs;
 
+	if (_list->folder_map_initialized != TRUE)
+	{
+		pool_t pool = pool_alloconly_create("mailbox list exmdbc iter", 2048);
+
+		struct exmdbc_mailbox_list_iterate_context *ctx =
+			p_new(pool, struct exmdbc_mailbox_list_iterate_context, 1);
+
+		ctx->ctx.pool = pool;
+		ctx->ctx.list = mbox->box.list; // вже містить exmdbc_mailbox_list
+		ctx->ctx.flags = 0;
+		ctx->list_ctx.next_index = 0;
+
+		array_create(&ctx->ctx.module_contexts, pool, sizeof(void *), 5);
+
+		int ret = exmdbc_list_refresh(_list, ctx);
+		if (ret < 0) {
+			mail_storage_set_internal_error(mbox->box.storage);
+			pool_unref(&pool);
+			return NULL;
+		}
+		pool_unref(&pool);
+	}
+	const char *lower_name = t_str_lcase(vname);
+	void *val = hash_table_lookup(_list->folder_id_map, lower_name);
+	if (val == NULL) {
+		return NULL;
+	}
+	mbox->folder_id = (uint64_t)(uintptr_t)val;
+
 	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 
 	mbox->storage = (struct exmdbc_storage *)storage;
 
-	if (!exmdbc_client_ping_store(mbox->storage->client->client, mbox->storage->mailbox_dir)) {
+	const int ret = exmdbc_client_ping_store(mbox->storage->mailbox_dir);
+	if (ret == FALSE) {
 		mail_storage_set_error(storage, MAIL_ERROR_NOTFOUND,
 					   "ping_store failed");
-		return -1;
+		return NULL;
 	}
 	i_info("exmdbc_mailbox_alloc ping_store complete\n");
 
@@ -205,6 +238,15 @@ const char *exmdbc_mailbox_get_remote_name(struct exmdbc_mailbox *mbox) {
 static int
 exmdbc_mailbox_exists(struct mailbox *box, bool auto_boxes, enum mailbox_existence *existence_r) {
 	fprintf(stdout, "!!! exmdbc_mailbox_exists called\n");
+
+	struct exmdbc_storage *storage = EXMDBC_STORAGE(box->storage);
+	const int ret = exmdbc_client_ping_store(storage->mailbox_dir);
+
+	if (ret == FALSE) {
+		mail_storage_set_error(box->storage, MAIL_ERROR_NOTFOUND,
+					   "Cannot ping store");
+		return -1;
+	}
 	return 0;
 }
 
@@ -248,7 +290,47 @@ static void exmdbc_mailbox_get_extensions(struct exmdbc_mailbox *mbox) {
 
 int exmdbc_mailbox_select(struct exmdbc_mailbox *mbox) {
 	fprintf(stdout, "!!! exmdbc_mailbox_select called\n");
-	return -1;
+
+
+	i_assert(mbox->client_box == NULL);
+
+	if (exmdbc_mailbox_has_modseqs(mbox)) {
+		if (!array_is_created(&mbox->rseq_modseqs))
+			i_array_init(&mbox->rseq_modseqs, 32);
+		else
+			array_clear(&mbox->rseq_modseqs);
+	}
+
+	struct exmdbc_folder_dto tmp_array[128];
+	unsigned int tmp_count = 0;
+
+
+	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)mbox->box.list;
+	const char *username = list->list.ns->user->username;
+	struct exmdb_folder_metadata folder_meta;
+	if (exmdbc_client_get_folder_dtos(list->client->client, mbox->folder_id, &folder_meta, username) < 0)
+		return -1;
+
+	mbox->exists_count = folder_meta.num_messages;
+	// exmdbc_mailbox_set_highest_modseq(mbox, modseq);
+	// exmdbc_mailbox_set_uidvalidity(mbox, uidvalidity);
+	// exmdbc_mailbox_set_uidnext(mbox, next_uid);
+
+	mbox->selecting = FALSE;
+	if (mbox->exists_count == 0) {
+		/* no mails. expunge everything. */
+		mbox->sync_next_lseq = 1;
+		// exmdbc_mailbox_init_delayed_trans(mbox);
+		// exmdbc_mailbox_fetch_state_finish(mbox);
+	} else {
+		/* We don't know the latest flags, refresh them. */
+		(void)exmdbc_mailbox_fetch_state(mbox, 1);
+	}
+	mbox->selected = TRUE;
+	mbox->exists_received = TRUE;
+	mbox->selected = TRUE;
+
+	return 0;
 }
 
 static int exmdbc_mailbox_open(struct mailbox *box) {
@@ -256,18 +338,23 @@ static int exmdbc_mailbox_open(struct mailbox *box) {
 	struct exmdbc_storage *storage = EXMDBC_STORAGE(box->storage);
 	struct exmdbc_mailbox *mbox   = EXMDBC_MAILBOX(box);
 
+	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)box->list;
 	i_info("exmdbc_mailbox_open(): called");
 
 	i_warning("exmdbc_mailbox_open: mail dir: %s", storage->mailbox_dir);
-	const int ret = exmdbc_client_ping_store(storage->client,
-	                                   storage->mailbox_dir);
-	fprintf(stdout, "!!! exmdbc_mailbox_alloc ping_store complete\n");
-
-	if (ret != EXIT_SUCCESS) {
+	const int ret = exmdbc_client_ping_store(storage->mailbox_dir);
+	if (ret == FALSE) {
 		mail_storage_set_error(box->storage, MAIL_ERROR_NOTFOUND,
 					   "Cannot ping store");
 		return -1;
 	}
+	fprintf(stdout, "!!! exmdbc_mailbox_alloc ping_store complete\n");
+
+	if (exmdbc_mailbox_select(mbox) < 0) {
+		mailbox_close(box);
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -326,7 +413,8 @@ exmdbc_mailbox_create(struct mailbox *box, const struct mailbox_update *update A
 	                                 storage->storage.unique_root_dir,
 	                                 directory);
 
-	if (!exmdbc_client_ping_store(storage->client, storage->mailbox_dir)) {
+	const int ret = exmdbc_client_ping_store(storage->mailbox_dir);
+	if (ret == FALSE) {
 		mail_storage_set_error(box->storage, MAIL_ERROR_NOTFOUND,
 					   "ping_store failed");
 		return -1;
@@ -461,35 +549,6 @@ exmdbc_mailbox_transaction_commit(struct mailbox_transaction_context *t, struct 
 	return ret >= 0 && ret2 >= 0 ? 0 : -1;
 }
 
-bool exmdbc_storage_client_handle_auth_failure(struct exmdbc_storage_client *client)
-{
-	if (client->auth_failed_state == EXMDBC_COMMAND_STATE_OK)
-		return FALSE;
-	fprintf(stdout, "!!! exmdbc_storage_client_handle_auth_failure called\n");
-
-	/* We need to set the error to either storage or to list, depending on
-	   whether the caller is from mail-storage.h API or mailbox-list.h API.
-	   We don't know here what the caller is though, so just set the error
-	   to both of them. */
-	if (client->_storage != NULL) {
-		if (client->auth_failed_state == EXMDBC_COMMAND_STATE_DISCONNECTED)
-			mail_storage_set_internal_error(&client->_storage->storage);
-		else {
-			mail_storage_set_error(&client->_storage->storage,
-				MAIL_ERROR_PERM, client->auth_failed_reason);
-		}
-	}
-	if (client->_list != NULL) {
-		if (client->auth_failed_state == EXMDBC_COMMAND_STATE_DISCONNECTED)
-			mailbox_list_set_internal_error(&client->_list->list);
-		else {
-			mailbox_list_set_error(&client->_list->list,
-				MAIL_ERROR_PERM, client->auth_failed_reason);
-		}
-	}
-	return TRUE;
-}
-
 void exmdbc_simple_context_init(struct exmdbc_simple_context *sctx,
 				   struct exmdbc_storage_client *client)
 {
@@ -504,20 +563,6 @@ void exmdbc_mailbox_run(struct exmdbc_mailbox *mbox)
 	fprintf(stdout, "!!! exmdbc_mailbox_run called\n");
 	exmdbc_mail_fetch_flush(mbox);
 	exmdbc_mailbox_run_nofetch(mbox);
-}
-void exmdbc_copy_error_from_reply(struct exmdbc_storage *storage,
-				 enum mail_error default_error,
-				 const struct exmdbc_command_reply *reply)
-{
-	enum mail_error error;
-
-	// if (exmdbc_resp_text_code_parse(reply->resp_text_key, &error)) {
-	// 	mail_storage_set_error(&storage->storage, error,
-	// 				   reply->text_without_resp);
-	// } else {
-	// 	mail_storage_set_error(&storage->storage, default_error,
-	// 				   reply->text_without_resp);
-	// }
 }
 
 struct mailbox exmdbc_mailbox = {

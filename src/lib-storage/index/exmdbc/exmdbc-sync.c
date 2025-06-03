@@ -431,18 +431,16 @@ struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum
 	struct exmdbc_mailbox_list *list = mbox->storage->client->_list;
 	bool changes;
 	int ret = 0;
-//TODO:EXMDBC:
-//	if (list != NULL) {
-//		if (!list->refreshed_mailboxes &&
-//		    list->last_refreshed_mailboxes < ioloop_time)
-//			list->refreshed_mailboxes_recently = FALSE;
-//	}
+
+	if (list != NULL) {
+		if (!list->refreshed_mailboxes &&
+		    list->last_refreshed_mailboxes < ioloop_time)
+			list->refreshed_mailboxes_recently = FALSE;
+	}
 
 	exmdbc_noop_if_needed(mbox, flags);
 
-	if (exmdbc_storage_client_handle_auth_failure(mbox->storage->client))
-		ret = -1;
-	else if (!mbox->state_fetched_success && !mbox->state_fetching_uid1 &&
+	if (!mbox->state_fetched_success && !mbox->state_fetching_uid1 &&
 		 exmdbc_mailbox_need_initial_fetch(mbox)) {
 		/* initial FETCH failed already */
 		ret = -1;

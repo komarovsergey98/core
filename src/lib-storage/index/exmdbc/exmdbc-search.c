@@ -3,7 +3,6 @@
 #include "lib.h"
 #include "str.h"
 #include "mail-search.h"
-#include "exmdbc-msgmap.h"
 #include "exmdbc-storage.h"
 #include "exmdbc-search.h"
 
@@ -27,107 +26,6 @@ struct exmdbc_search_context {
 static MODULE_CONTEXT_DEFINE_INIT(exmdbc_storage_module,
 				  &mail_storage_module_register);
 
-static bool
-exmdbc_build_search_query_args(struct exmdbc_mailbox *mbox,
-			      const struct mail_search_arg *args,
-			      bool parent_or, string_t *str);
-
-static bool exmdbc_search_is_fast_local(const struct mail_search_arg *args)
-{
-	fprintf(stdout, "!!! exmdbc_search_is_fast_local called\n");
-	const struct mail_search_arg *arg;
-
-	for (arg = args; arg != NULL; arg = arg->next) {
-		switch (arg->type) {
-		case SEARCH_OR:
-		case SEARCH_SUB:
-			if (!exmdbc_search_is_fast_local(arg->value.subargs))
-				return FALSE;
-			break;
-		case SEARCH_ALL:
-		case SEARCH_SEQSET:
-		case SEARCH_UIDSET:
-		case SEARCH_FLAGS:
-		case SEARCH_KEYWORDS:
-		case SEARCH_MODSEQ:
-		case SEARCH_MAILBOX:
-		case SEARCH_MAILBOX_GUID:
-		case SEARCH_MAILBOX_GLOB:
-		case SEARCH_REAL_UID:
-			break;
-		default:
-			return FALSE;
-		}
-	}
-	return TRUE;
-}
-
-static bool
-exmdbc_build_search_query_arg(struct exmdbc_mailbox *mbox,
-			     const struct mail_search_arg *arg,
-			     string_t *str)
-{
-	fprintf(stdout, "!!! exmdbc_build_search_query_arg called\n");
-	struct mail_search_arg arg2 = *arg;
-	const char *error;
-
-	if (arg->match_not)
-		str_append(str, "NOT ");
-	arg2.match_not = FALSE;
-	arg = &arg2;
-
-	switch (arg->type) {
-	case SEARCH_OR:
-	case SEARCH_SUB:
-	case SEARCH_SEQSET:
-	case SEARCH_BEFORE:
-	case SEARCH_SINCE:
-	case SEARCH_ON:
-	case SEARCH_ALL:
-	case SEARCH_UIDSET:
-	case SEARCH_FLAGS:
-	case SEARCH_KEYWORDS:
-	case SEARCH_SMALLER:
-	case SEARCH_LARGER:
-	case SEARCH_HEADER:
-	case SEARCH_HEADER_ADDRESS:
-	case SEARCH_HEADER_COMPRESS_LWSP:
-	case SEARCH_BODY:
-	case SEARCH_TEXT:
-	case SEARCH_MODSEQ:
-	case SEARCH_SAVEDATESUPPORTED:
-	case SEARCH_INTHREAD:
-	case SEARCH_GUID:
-	case SEARCH_MAILBOX:
-	case SEARCH_MAILBOX_GUID:
-	case SEARCH_MAILBOX_GLOB:
-	case SEARCH_REAL_UID:
-	case SEARCH_MIMEPART:
-		/* not supported for now */
-		break;
-	}
-	return FALSE;
-}
-
-static bool
-exmdbc_build_search_query_args(struct exmdbc_mailbox *mbox,
-			      const struct mail_search_arg *args,
-			      bool parent_or, string_t *str)
-{
-	fprintf(stdout, "!!! exmdbc_build_search_query_args called\n");
-	const struct mail_search_arg *arg;
-
-	for (arg = args; arg != NULL; arg = arg->next) {
-		if (parent_or && arg->next != NULL)
-			str_append(str, "OR ");
-		if (!exmdbc_build_search_query_arg(mbox, arg, str))
-			return FALSE;
-		str_append_c(str, ' ');
-	}
-	str_truncate(str, str_len(str)-1);
-	return TRUE;
-}
-
 static bool exmdbc_build_search_query(struct exmdbc_mailbox *mbox,
 				     const struct mail_search_args *args,
 				     const char **query_r)
@@ -138,29 +36,6 @@ static bool exmdbc_build_search_query(struct exmdbc_mailbox *mbox,
 	//TODO:EXMDBC:
 	*query_r = str_c(str);
 	return TRUE;
-}
-
-static void exmdbc_search_callback(const struct exmdbc_command_reply *reply,
-				  void *context)
-{
-	fprintf(stdout, "!!! exmdbc_search_callback called\n");
-	struct mail_search_context *ctx = context;
-	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(ctx->transaction->box);
-	struct exmdbc_search_context *ictx = EXMDBC_SEARCHCTX(ctx);
-	i_assert(ictx != NULL);
-
-	ictx->finished = TRUE;
-	if (reply->state == EXMDBC_COMMAND_STATE_OK) {
-		seq_range_array_iter_init(&ictx->iter, &ictx->rseqs);
-		ictx->success = TRUE;
-	} else if (reply->state == EXMDBC_COMMAND_STATE_DISCONNECTED) {
-		mail_storage_set_internal_error(mbox->box.storage);
-	} else {
-		mailbox_set_critical(&mbox->box,
-			"exmdbc: Command failed: %s", reply->text_full);
-	}
-	//TODO:EXMDBC:
-	// exmdbc_client_stop(mbox->storage->client->client);
 }
 
 struct mail_search_context *

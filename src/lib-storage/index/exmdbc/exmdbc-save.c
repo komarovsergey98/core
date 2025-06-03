@@ -8,13 +8,10 @@
 #include "istream.h"
 #include "istream-crlf.h"
 #include "ostream.h"
-#include "index-mail.h"
 #include "mail-copy.h"
 #include "mailbox-list-private.h"
 #include "exmdbc-msgmap.h"
 #include "exmdbc-storage.h"
-#include "exmdbc-sync.h"
-#include "exmdbc-mail.h"
 #include "seq-set-builder.h"
 
 struct exmdbc_save_context {
@@ -45,7 +42,6 @@ struct exmdbc_save_cmd_context {
 #define EXMDBC_SERVER_CMDLINE_MAX_LEN 	8000
 
 void exmdbc_transaction_save_rollback(struct mail_save_context *_ctx);
-static void exmdbc_mail_copy_bulk_flush(struct exmdbc_mailbox *mbox);
 
 struct mail_save_context *
 exmdbc_save_alloc(struct mailbox_transaction_context *t)
@@ -75,9 +71,6 @@ int exmdbc_save_begin(struct mail_save_context *_ctx, struct istream *input)
 	const char *path;
 
 	i_assert(ctx->fd == -1);
-
-	if (exmdbc_storage_client_handle_auth_failure(ctx->mbox->storage->client))
-		return -1;
 
 	//TODO:EXMDBC:
 	//ctx->fd = exmdbc_client_create_temp_fd(ctx->mbox->storage->client->client,
@@ -112,153 +105,6 @@ int exmdbc_save_continue(struct mail_save_context *_ctx)
 		return -1;
 	}
 	return 0;
-}
-
-static void exmdbc_save_appenduid(struct exmdbc_save_context *ctx,
-				 const struct exmdbc_command_reply *reply,
-				 uint32_t *uid_r)
-{
-	fprintf(stdout, "!!! exmdbc_save_appenduid called\n");
-	const char *const *args;
-	uint32_t uid_validity, dest_uid;
-
-	*uid_r = 0;
-
-	/* <uidvalidity> <dest uid-set> */
-	args = t_strsplit(reply->resp_text_value, " ");
-	if (str_array_length(args) != 2)
-		return;
-
-	if (str_to_uint32(args[0], &uid_validity) < 0)
-		return;
-	if (ctx->dest_uid_validity == 0)
-		ctx->dest_uid_validity = uid_validity;
-	else if (ctx->dest_uid_validity != uid_validity)
-		return;
-
-	if (str_to_uint32(args[1], &dest_uid) == 0) {
-		seq_range_array_add_with_init(&ctx->dest_saved_uids,
-					      32, dest_uid);
-		*uid_r = dest_uid;
-	}
-}
-
-static void
-exmdbc_save_add_to_index(struct exmdbc_save_context *ctx, uint32_t uid)
-{
-	fprintf(stdout, "!!! exmdbc_save_add_to_index called\n");
-	struct mail *_mail = ctx->ctx.dest_mail;
-	struct index_mail *imail = INDEX_MAIL(_mail);
-	uint32_t seq;
-
-	/* we'll temporarily append messages and at commit time expunge
-	   them all, since we can't guarantee that no one else has saved
-	   messages to remote server during our transaction */
-	mail_index_append(ctx->trans, uid, &seq);
-	mail_set_seq_saving(_mail, seq);
-	imail->data.no_caching = TRUE;
-	imail->data.forced_no_caching = TRUE;
-
-	if (ctx->fd != -1) {
-		struct exmdbc_mail *exmdbc_mail = EXMDBC_MAIL(_mail);
-		imail->data.stream = i_stream_create_fd_autoclose(&ctx->fd, 0);
-		exmdbc_mail->header_fetched = TRUE;
-		exmdbc_mail->body_fetched = TRUE;
-		/* The saved stream wasn't actually read, but it needs to be
-		   set accessed to avoid assert-crash. */
-		_mail->mail_stream_accessed = TRUE;
-		exmdbc_mail_init_stream(exmdbc_mail);
-	}
-
-	ctx->save_count++;
-}
-
-static void exmdbc_save_callback(const struct exmdbc_command_reply *reply,
-				void *context)
-{
-	fprintf(stdout, "!!! exmdbc_save_callback called\n");
-	struct exmdbc_save_cmd_context *ctx = context;
-	uint32_t uid = 0;
-
-	if (reply->state == EXMDBC_COMMAND_STATE_OK) {
-		if (reply->resp_text_key != NULL &&
-		    strcasecmp(reply->resp_text_key, "APPENDUID") == 0)
-			exmdbc_save_appenduid(ctx->ctx, reply, &uid);
-		exmdbc_save_add_to_index(ctx->ctx, uid);
-		ctx->ret = 0;
-	} else if (exmdbc_storage_client_handle_auth_failure(ctx->ctx->mbox->storage->client)) {
-		ctx->ret = -1;
-	} else if (reply->state == EXMDBC_COMMAND_STATE_NO) {
-		exmdbc_copy_error_from_reply(ctx->ctx->mbox->storage,
-					    MAIL_ERROR_PARAMS, reply);
-		ctx->ret = -1;
-	} else {
-		mailbox_set_critical(&ctx->ctx->mbox->box,
-			"exmdbc: APPEND failed: %s", reply->text_full);
-		ctx->ret = -1;
-	}
-
-	//TODO:EXMDBC:
-	//exmdbc_client_stop(ctx->ctx->mbox->storage->client->client);
-}
-
-static void
-exmdbc_save_noop_callback(const struct exmdbc_command_reply *reply ATTR_UNUSED,
-			 void *context)
-{
-	fprintf(stdout, "!!! exmdbc_save_noop_callback called\n");
-	struct exmdbc_save_cmd_context *ctx = context;
-
-	/* we don't really care about the reply */
-	ctx->ret = 0;
-
-	//TODO:EXMDBC:
-	//exmdbc_client_stop(ctx->ctx->mbox->storage->client->client);
-}
-
-static void
-exmdbc_copy_rollback_store_callback(const struct exmdbc_command_reply *reply ATTR_UNUSED,
-				   void *context)
-{
-	fprintf(stdout, "!!! exmdbc_copy_rollback_store_callback called\n");
-	struct exmdbc_save_context *ctx = context;
-	/* Can't do much about a non successful STORE here */
-	if (reply->state != EXMDBC_COMMAND_STATE_OK) {
-		e_error(ctx->src_mbox->box.event,
-			"exmdbc: Failed to set \\Deleted flag for rolling back "
-			"failed copy: %s", reply->text_full);
-		ctx->src_mbox->rollback_pending = FALSE;
-		ctx->finished = TRUE;
-		ctx->failed = TRUE;
-	} else {
-		i_assert(ctx->src_mbox->rollback_pending);
-	}
-	/* No need stop the exmdbc client here there is always an additional
-	   expunge callback after this. */
-}
-
-static void
-exmdbc_copy_rollback_expunge_callback(const struct exmdbc_command_reply *reply ATTR_UNUSED,
-				     void *context)
-{
-	fprintf(stdout, "!!! exmdbc_copy_rollback_expunge_callback called\n");
-	struct exmdbc_save_context *ctx = context;
-
-	/* Can't do much about a non successful EXPUNGE here */
-	if (reply->state != EXMDBC_COMMAND_STATE_OK) {
-		e_error(ctx->src_mbox->box.event,
-			"exmdbc: Failed to expunge messages for rolling back "
-			"failed copy: %s", reply->text_full);
-		ctx->src_mbox->rollback_pending = FALSE;
-		ctx->finished = TRUE;
-		ctx->failed = TRUE;
-	} else {
-		ctx->finished = TRUE;
-		ctx->src_mbox->rollback_pending = FALSE;
-	}
-
-	//TODO:EXMDBC:
-	//exmdbc_client_stop(ctx->src_mbox->storage->client->client);
 }
 
 static void
@@ -415,23 +261,22 @@ int exmdbc_transaction_save_commit_pre(struct mail_save_context *_ctx)
 int exmdbc_transaction_save_commit(struct mailbox_transaction_context *t)
 {
 	fprintf(stdout, "!!! exmdbc_transaction_save_commit called\n");
-       struct exmdbc_save_context *ctx = NULL;
-       struct exmdbc_mailbox *src_mbox = NULL;
+	struct exmdbc_save_context *ctx = NULL;
+	struct exmdbc_mailbox *src_mbox = NULL;
 
-       if (t->save_ctx != NULL) {
-               ctx = EXMDBC_SAVECTX(t->save_ctx);
-               src_mbox = ctx->src_mbox;
-       }
+	if (t->save_ctx != NULL) {
+		ctx = EXMDBC_SAVECTX(t->save_ctx);
+		src_mbox = ctx->src_mbox;
+	}
 
-       if (src_mbox != NULL && src_mbox->pending_copy_request != NULL) {
-	       /* If there is still a copy command to send flush it now */
-	       exmdbc_mail_copy_bulk_flush(src_mbox);
-	       exmdbc_copy_bulk_finish(ctx);
-       }
+	if (src_mbox != NULL && src_mbox->pending_copy_request != NULL) {
+		/* If there is still a copy command to send flush it now */
+		exmdbc_copy_bulk_finish(ctx);
+	}
 
-       if (ctx != NULL)
-	       return ctx->failed ? -1 : 0;
-       return 0;
+	if (ctx != NULL)
+		return ctx->failed ? -1 : 0;
+	return 0;
 }
 
 void exmdbc_transaction_save_commit_post(struct mail_save_context *_ctx,
@@ -580,236 +425,6 @@ void exmdbc_transaction_save_rollback(struct mail_save_context *_ctx)
 		array_free(&ctx->dest_saved_uids);
 		i_free(ctx);
 	}
-}
-
-static bool exmdbc_save_copyuid(struct exmdbc_save_context *ctx,
-			       const struct exmdbc_command_reply *reply,
-			       uint32_t *uid_r)
-{
-	fprintf(stdout, "!!! exmdbc_save_copyuid called\n");
-	ARRAY_TYPE(seq_range) dest_uidset, source_uidset;
-	struct seq_range_iter iter;
-	const char *const *args;
-	uint32_t uid_validity;
-
-	*uid_r = 0;
-
-	/* <uidvalidity> <source uid-set> <dest uid-set> */
-	args = t_strsplit(reply->resp_text_value, " ");
-	if (str_array_length(args) != 3)
-		return FALSE;
-
-	if (str_to_uint32(args[0], &uid_validity) < 0)
-		return FALSE;
-	if (ctx->dest_uid_validity == 0)
-		ctx->dest_uid_validity = uid_validity;
-	else if (ctx->dest_uid_validity != uid_validity)
-		return FALSE;
-
-	t_array_init(&source_uidset, 8);
-	t_array_init(&dest_uidset, 8);
-
-	//TODO:EXMDBC:
-	/*if (imap_seq_set_nostar_parse(args[1], &source_uidset) < 0)
-		return FALSE;
-	if (imap_seq_set_nostar_parse(args[2], &dest_uidset) < 0)
-		return FALSE;*/
-
-	if (!array_is_created(&ctx->dest_saved_uids))
-		i_array_init(&ctx->dest_saved_uids, 8);
-
-	seq_range_array_merge(&ctx->dest_saved_uids, &dest_uidset);
-
-	seq_range_array_iter_init(&iter, &dest_uidset);
-	(void)seq_range_array_iter_nth(&iter, 0, uid_r);
-	return TRUE;
-}
-
-static void exmdbc_copy_set_error(struct exmdbc_save_context *sctx,
-				 const struct exmdbc_command_reply *reply)
-{
-	fprintf(stdout, "!!! exmdbc_copy_set_error called\n");
-	sctx->failed = TRUE;
-
-	if (reply->state != EXMDBC_COMMAND_STATE_BAD)
-		exmdbc_copy_error_from_reply(sctx->mbox->storage,
-					    MAIL_ERROR_PARAMS, reply);
-	else
-		mailbox_set_critical(&sctx->mbox->box,
-				     "exmdbc: COPY failed: %s",
-				     reply->text_full);
-}
-
-static void
-exmdbc_copy_simple_callback(const struct exmdbc_command_reply *reply,
-			   void *context)
-{
-	fprintf(stdout, "!!! exmdbc_copy_simple_callback called\n");
-	struct exmdbc_save_cmd_context *ctx = context;
-	uint32_t uid = 0;
-
-	if (reply->state == EXMDBC_COMMAND_STATE_OK) {
-		if (reply->resp_text_key != NULL &&
-		    strcasecmp(reply->resp_text_key, "COPYUID") == 0)
-			exmdbc_save_copyuid(ctx->ctx, reply, &uid);
-		exmdbc_save_add_to_index(ctx->ctx, uid);
-		ctx->ret = 0;
-	} else if (reply->state == EXMDBC_COMMAND_STATE_NO) {
-		exmdbc_copy_error_from_reply(ctx->ctx->mbox->storage,
-					    MAIL_ERROR_PARAMS, reply);
-		ctx->ret = -1;
-	} else {
-		mailbox_set_critical(&ctx->ctx->mbox->box,
-			"exmdbc: COPY failed: %s", reply->text_full);
-		ctx->ret = -1;
-	}
-
-	//TODO:EXMDBC:
-	// exmdbc_client_stop(ctx->ctx->mbox->storage->client->client);
-}
-
-static int
-exmdbc_copy_simple(struct mail_save_context *_ctx, struct mail *mail)
-{
-	fprintf(stdout, "!!! exmdbc_copy_simple called\n");
-	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
-	struct mailbox_transaction_context *_t = _ctx->transaction;
-	struct exmdbc_save_cmd_context sctx;
-	struct exmdbc_command *cmd;
-
-	sctx.ret = -2;
-	sctx.ctx = ctx;
-
-	//TODO:EXMDBC:
-	// cmd = exmdbc_client_mailbox_cmd(ctx->src_mbox->client_box,
-	// 			       exmdbc_copy_simple_callback,
-	// 			       &sctx);
-	// exmdbc_command_sendf(cmd, "UID COPY %u %s", mail->uid, _t->box->name);
-	while (sctx.ret == -2)
-		exmdbc_mailbox_run(ctx->src_mbox);
-	ctx->finished = TRUE;
-	return sctx.ret;
-}
-
-static void exmdbc_copy_bulk_callback(const struct exmdbc_command_reply *reply,
-				     void *context)
-{
-	fprintf(stdout, "!!! exmdbc_copy_bulk_callback called\n");
-	struct exmdbc_copy_request *request = context;
-	struct exmdbc_save_context *ctx = request->sctx;
-	struct exmdbc_mailbox *mbox = ctx->src_mbox;
-	unsigned int uid;
-
-	i_assert(mbox != NULL);
-	i_assert(request == mbox->pending_copy_request);
-
-	/* Check the reply state and add uid's to index and
-	   dest_saved_uids. */
-	if (ctx->failed) {
-		/* If the saving already failed try to find UIDs already
-		   copied from the reply so that rollback can expunge
-		   them */
-		if (null_strcasecmp(reply->resp_text_key, "COPYUID") == 0) {
-			(void)exmdbc_save_copyuid(ctx, reply, &uid);
-			exmdbc_transaction_save_rollback(&ctx->ctx);
-		}
-	} else if (reply->state == EXMDBC_COMMAND_STATE_OK) {
-		if (reply->resp_text_key != NULL &&
-		   strcasecmp(reply->resp_text_key, "COPYUID") == 0 &&
-		   exmdbc_save_copyuid(ctx, reply, &uid)) {
-			ctx->finished = TRUE;
-		}
-	} else {
-		exmdbc_copy_set_error(ctx, reply);
-	}
-
-	ctx->src_mbox->pending_copy_request = NULL;
-	i_free(request);
-
-	//TODO:EXMDBC:
-	// exmdbc_client_stop(mbox->storage->client->client);
-}
-
-static void exmdbc_mail_copy_bulk_flush(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mail_copy_bulk_flush called\n");
-	struct exmdbc_command *cmd;
-
-	i_assert(mbox != NULL);
-	i_assert(mbox->pending_copy_request != NULL);
-	i_assert(mbox->client_box != NULL);
-
-	//TODO:EXMDBC:
-	// cmd = exmdbc_client_mailbox_cmd(mbox->client_box,
-	// 			       exmdbc_copy_bulk_callback,
-	// 			       mbox->pending_copy_request);
-	//
-	// seqset_builder_deinit(&mbox->pending_copy_request->uidset_builder);
-	//
-	// str_append(mbox->pending_copy_cmd, " ");
-	// imap_append_astring(mbox->pending_copy_cmd, mbox->copy_dest_box);
-	//
-	// exmdbc_command_send(cmd, str_c(mbox->pending_copy_cmd));
-	//
-	// exmdbc_copy_bulk_ctx_deinit(mbox->pending_copy_request->sctx);
-}
-
-static bool
-exmdbc_mail_copy_bulk_try_merge(struct exmdbc_mailbox *mbox, uint32_t uid,
-			       const char *box)
-{
-	fprintf(stdout, "!!! exmdbc_mail_copy_bulk_try_merge called\n");
-	i_assert(str_begins_with(str_c(mbox->pending_copy_cmd), "UID COPY "));
-
-	if (strcmp(box, mbox->copy_dest_box) != 0) {
-		/* Not the same mailbox merging not possible */
-		return FALSE;
-	}
-	return seqset_builder_try_add(mbox->pending_copy_request->uidset_builder,
-				      EXMDBC_SERVER_CMDLINE_MAX_LEN, uid);
-}
-
-static void
-exmdbc_mail_copy_bulk_delayed_send_or_merge(struct exmdbc_save_context *ctx,
-					   uint32_t uid,
-					   const char *box)
-{
-	fprintf(stdout, "!!! exmdbc_mail_copy_bulk_delayed_send_or_merge called\n");
-	struct exmdbc_mailbox *mbox = ctx->src_mbox;
-
-	if (mbox->pending_copy_request != NULL &&
-	    !exmdbc_mail_copy_bulk_try_merge(mbox, uid, box)) {
-		/* send the previous COPY and create new one after
-		   waiting for this one to be finished. */
-		exmdbc_mail_copy_bulk_flush(mbox);
-		exmdbc_copy_bulk_finish(mbox->pending_copy_request->sctx);
-	}
-	if (mbox->pending_copy_request == NULL) {
-		mbox->pending_copy_request =
-			i_new(struct exmdbc_copy_request, 1);
-		str_printfa(mbox->pending_copy_cmd, "UID COPY ");
-		mbox->pending_copy_request->uidset_builder =
-			seqset_builder_init(mbox->pending_copy_cmd);
-		seqset_builder_add(mbox->pending_copy_request->uidset_builder,
-				   uid);
-		mbox->copy_dest_box = i_strdup(box);
-	} else {
-		i_assert(mbox->pending_copy_request->sctx == ctx);
-	}
-	mbox->pending_copy_request->sctx = ctx;
-}
-
-static int
-exmdbc_copy_bulk(struct exmdbc_save_context *ctx, struct mail *mail)
-{
-	fprintf(stdout, "!!! exmdbc_copy_bulk called\n");
-	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(ctx->ctx.transaction->box);
-
-	exmdbc_mail_copy_bulk_delayed_send_or_merge(ctx, mail->uid,
-						   exmdbc_mailbox_get_remote_name(mbox));
-	exmdbc_save_add_to_index(ctx, 0);
-
-	return ctx->failed ? -1 : 0;
 }
 
 static bool exmdbc_is_mail_expunged(struct exmdbc_mailbox *mbox, uint32_t uid)

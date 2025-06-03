@@ -1,7 +1,4 @@
 #include "lib.h"
-#include "str.h"
-#include "hex-binary.h"
-#include "sha1.h"
 #include "istream.h"
 #include "index-mail.h"
 #include "exmdbc-mail.h"
@@ -10,8 +7,6 @@
 
 #include "exmdbc-storage.h"
 #include "exmdbc-mailbox.h"
-
-static bool exmdbc_mail_get_cached_guid(struct mail *_mail);
 
 struct mail *
 exmdbc_mail_alloc(struct mailbox_transaction_context *t,
@@ -357,95 +352,6 @@ static void exmdbc_mail_close(struct mail *_mail)
 	mail->body_fetched = FALSE;
 
 	i_assert(mail->fetch_count == 0);
-}
-
-static int exmdbc_mail_get_hdr_hash(struct index_mail *imail)
-{
-	fprintf(stdout, "!!! exmdbc_mail_get_hdr_hash called\n");
-	struct istream *input;
-	const unsigned char *data;
-	size_t size;
-	uoff_t old_offset;
-	struct sha1_ctxt sha1_ctx;
-	unsigned char sha1_output[SHA1_RESULTLEN];
-	const char *sha1_str;
-
-	sha1_init(&sha1_ctx);
-	old_offset = imail->data.stream == NULL ? 0 :
-		imail->data.stream->v_offset;
-	if (mail_get_hdr_stream(&imail->mail.mail, NULL, &input) < 0)
-		return -1;
-	i_assert(imail->data.stream != NULL);
-	while (i_stream_read_more(input, &data, &size) > 0) {
-		sha1_loop(&sha1_ctx, data, size);
-		i_stream_skip(input, size);
-	}
-	i_stream_seek(imail->data.stream, old_offset);
-	sha1_result(&sha1_ctx, sha1_output);
-
-	sha1_str = binary_to_hex(sha1_output, sizeof(sha1_output));
-	imail->data.guid = p_strdup(imail->mail.data_pool, sha1_str);
-	return 0;
-}
-
-static bool exmdbc_mail_get_cached_guid(struct mail *_mail)
-{
-	fprintf(stdout, "!!! exmdbc_mail_get_cached_guid called\n");
-	struct index_mail *imail = INDEX_MAIL(_mail);
-	const enum index_cache_field cache_idx =
-		imail->ibox->cache_fields[MAIL_CACHE_GUID].idx;
-	string_t *str;
-
-	if (imail->data.guid != NULL) {
-		if (mail_cache_field_can_add(_mail->transaction->cache_trans,
-					     _mail->seq, cache_idx)) {
-			/* GUID was prefetched - add to cache */
-			index_mail_cache_add_idx(imail, cache_idx,
-				imail->data.guid, strlen(imail->data.guid));
-		}
-		return TRUE;
-	}
-
-	str = str_new(imail->mail.data_pool, 64);
-	if (mail_cache_lookup_field(_mail->transaction->cache_view,
-				    str, imail->mail.mail.seq, cache_idx) > 0) {
-		imail->data.guid = str_c(str);
-		return TRUE;
-	}
-	return FALSE;
-}
-
-static int exmdbc_mail_get_guid(struct mail *_mail, const char **value_r)
-{
-	fprintf(stdout, "!!! exmdbc_mail_get_guid called\n");
-	struct index_mail *imail = INDEX_MAIL(_mail);
-	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
-	const enum index_cache_field cache_idx =
-		imail->ibox->cache_fields[MAIL_CACHE_GUID].idx;
-
-	if (exmdbc_mail_get_cached_guid(_mail)) {
-		*value_r = imail->data.guid;
-		return 0;
-	}
-
-	/* GUID not in cache, fetch it */
-	if (mbox->guid_fetch_field_name != NULL) {
-		if (exmdbc_mail_fetch(_mail, MAIL_FETCH_GUID, NULL) < 0)
-			return -1;
-		if (imail->data.guid == NULL) {
-			(void)exmdbc_mail_failed(_mail, mbox->guid_fetch_field_name);
-			return -1;
-		}
-	} else {
-		/* use hash of message headers as the GUID */
-		if (exmdbc_mail_get_hdr_hash(imail) < 0)
-			return -1;
-	}
-
-	index_mail_cache_add_idx(imail, cache_idx,
-				 imail->data.guid, strlen(imail->data.guid));
-	*value_r = imail->data.guid;
-	return 0;
 }
 
 static int

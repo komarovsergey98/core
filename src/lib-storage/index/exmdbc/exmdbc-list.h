@@ -5,10 +5,37 @@
 
 #define MAILBOX_LIST_NAME_EXMDBC "exmdbc"
 
+#define MAX_MAILBOXES 128
+
+
+struct exmdbc_list_iterate_context {
+	struct mailbox_list_iterate_context ctx;
+	struct mailbox_info mailboxes[MAX_MAILBOXES];
+	unsigned int mailbox_count;
+	unsigned int next_index;
+};
+
+struct exmdbc_mailbox_list_iterate_context {
+	struct mailbox_list_iterate_context ctx;
+	struct mailbox_tree_context *tree;
+	struct mailbox_node *ns_root;
+
+	struct exmdbc_list_iterate_context list_ctx;
+	struct mailbox_tree_iterate_context *iter;
+	struct mailbox_info info;
+	string_t *special_use;
+};
+
 struct exmdbc_mailbox_list {
 	struct mailbox_list list;
 	struct exmdbc_storage_client *client;
 	struct mailbox_list *index_list;
+	struct settings_instance *index_list_set_instance;
+
+	HASH_TABLE(const char *, void *) folder_id_map;
+
+
+	bool folder_map_initialized;
 
 	struct mailbox_tree_context *mailboxes, *tmp_subscriptions;
 	char root_sep;
@@ -24,5 +51,7 @@ struct exmdbc_mailbox_list {
 };
 
 extern struct mailbox_list exmdbc_mailbox_list;
+
+int exmdbc_list_refresh(struct exmdbc_mailbox_list *list, struct exmdbc_mailbox_list_iterate_context *ctx);
 
 #endif
