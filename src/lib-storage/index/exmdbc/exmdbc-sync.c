@@ -12,14 +12,16 @@
 #include <stdio.h>
 
 
-static int find_uid_in_array(uint32_t uid, uint32_t *array, uint32_t size) {
-	for (int i = 0; i < size; ++i)
-		if (array[i] == uid)
-			return i;
+static int find_uid_in_array(const uint32_t uid, const uint32_t *array, const uint32_t size) {
+	if (array != NULL) {
+		for (int i = 0; i < size; ++i)
+			if (array[i] == uid)
+				return i;
+	}
 	return -1;
 }
 
-int exmdbc_mailbox_sync(struct exmdbc_mailbox *mbox)
+int exmdbc_mailbox_sync(const struct exmdbc_mailbox *mbox)
 {
     fprintf(stdout, "!!! exmdbc_sync called\n");
     struct mail_index_view *view = mbox->box.view;
@@ -42,7 +44,7 @@ int exmdbc_mailbox_sync(struct exmdbc_mailbox *mbox)
 	}
 
     unsigned int max_messages = 1000;
-    struct folder_metadata_message *messages = calloc(max_messages, sizeof(*messages));
+    struct message_properties *messages = calloc(max_messages, sizeof(*messages));
     if (!messages) {
         fprintf(stderr, "Failed to allocate memory\n");
         return 1;
@@ -56,7 +58,7 @@ int exmdbc_mailbox_sync(struct exmdbc_mailbox *mbox)
     if (gromox_count < 0) {
         fprintf(stderr, "Failed to get folder messages\n");
         free(messages);
-        return 1;
+        return -1;
     }
 
     // UID from gromox
@@ -129,23 +131,6 @@ int exmdbc_mailbox_sync(struct exmdbc_mailbox *mbox)
     return 0;
 }
 
-
-static bool exmdbc_mailbox_need_initial_fetch(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_need_initial_fetch called\n");
-	if (mbox->box.deleting) {
-		/* If the mailbox is about to be deleted there is no need to
-		   expect initial fetch to be done */
-		return FALSE;
-	}
-	if ((mbox->box.flags & MAILBOX_FLAG_SAVEONLY) != 0) {
-		/* The mailbox is opened only for saving there is no need to
-		   expect initial fetching do be done. */
-		return FALSE;
-	}
-	return TRUE;
-}
-
 struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum mailbox_sync_flags flags)
 {
 	fprintf(stdout, "!!! exmdbc_mailbox_sync_init called\n");
@@ -176,11 +161,11 @@ struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum
 			list->refreshed_mailboxes_recently = FALSE;
 	}
 
-	if (!mbox->state_fetched_success && !mbox->state_fetching_uid1 &&
-		 exmdbc_mailbox_need_initial_fetch(mbox)) {
-		/* initial FETCH failed already */
-		ret = -1;
-	}
+	// if (!mbox->state_fetched_success && !mbox->state_fetching_uid1 &&
+	// 	 exmdbc_mailbox_need_initial_fetch(mbox)) {
+	// 	/* initial FETCH failed already */
+	// 	ret = -1;
+	// }
 
 	return index_mailbox_sync_init(box, flags, ret < 0);
 }

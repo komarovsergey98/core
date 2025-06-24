@@ -10,21 +10,6 @@
 
 struct exmdbc_mailbox;
 
-typedef void exmdbc_storage_callback_t(const struct imapc_untagged_reply *reply,
-					  struct exmdbc_storage_client *client);
-typedef void exmdbc_mailbox_callback_t(const struct imapc_untagged_reply *reply,
-					  struct exmdbc_mailbox *mbox);
-
-struct exmdbc_storage_event_callback {
-	char *name;
-	exmdbc_storage_callback_t *callback;
-};
-
-struct exmdbc_mailbox_event_callback {
-	const char *name;
-	exmdbc_mailbox_callback_t *callback;
-};
-
 #define EXMDBC_HAS_FEATURE(mstorage, feature) \
 (((mstorage)->set->parsed_features & feature) != 0)
 #define EXMDBC_BOX_HAS_FEATURE(mbox, feature) \
@@ -150,15 +135,6 @@ struct exmdbc_copy_request {
 	struct seqset_builder *uidset_builder;
 };
 
-struct exmdbc_simple_context {
-	struct exmdbc_storage_client *client;
-	int ret;
-};
-
-struct exmdbc_command {
-
-};
-
 extern struct mail_storage exmdbc_storage;
 
 struct exmdb_client *
@@ -189,23 +165,6 @@ void exmdbc_transaction_save_commit_post(struct mail_save_context *ctx,
 void exmdbc_transaction_save_rollback(struct mail_save_context *ctx);
 
 void exmdbc_mail_cache_free(struct exmdbc_mail_cache *cache);
-
-bool exmdbc_mail_error_to_resp_text_code(enum mail_error error, const char **str_r);
-void exmdbc_copy_error_from_reply(struct exmdbc_storage *storage,
-				 enum mail_error default_error,
-				 const struct exmdbc_command_reply *reply);
-void exmdbc_simple_context_init(struct exmdbc_simple_context *sctx,
-			       struct exmdbc_storage_client *client);
-void exmdbc_simple_callback(const struct exmdbc_command_reply *reply,
-			   void *context);
-
-void exmdbc_untagged_fetch_ctx_free(struct exmdbc_untagged_fetch_ctx **_ctx);
-void exmdbc_untagged_fetch_update_flags(struct exmdbc_mailbox *mbox,
-				       struct exmdbc_untagged_fetch_ctx *ctx,
-				       struct mail_index_view *view,
-				       uint32_t lseq);
-
-
 
 
 #endif

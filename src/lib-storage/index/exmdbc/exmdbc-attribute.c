@@ -96,19 +96,6 @@ exmdbc_storage_attribute_build_cmd(struct exmdbc_mailbox *mbox,
 	return str_c(text);
 }
 
-static int
-exmdbc_storage_attribute_run_cmd(struct exmdbc_mailbox *mbox, const char *line,
-				bool iterating,
-				struct exmdbc_storage_attribute_context *actx)
-{
-	fprintf(stdout, "!!! exmdbc_storage_attribute_run_cmd called\n");
-	struct exmdbc_storage_client *client = mbox->storage->client;
-	struct exmdbc_simple_context sctx;
-	struct exmdbc_command *cmd;
-
-	//TODO:EXMDBC:
-	return -1;
-}
 
 static int
 exmdbc_storage_attribute_cmd(struct mailbox *box,
@@ -121,8 +108,7 @@ exmdbc_storage_attribute_cmd(struct mailbox *box,
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
 	const char *line = exmdbc_storage_attribute_build_cmd(
 		mbox, command, depth, type_flags, key, value);
-	return exmdbc_storage_attribute_run_cmd(
-		mbox, line, command == GETMETADATA && depth != 0, actx);
+	return -1;
 }
 
 enum handling {

@@ -561,8 +561,6 @@ exmdbc_list_subscriptions_refresh(struct mailbox_list *_src_list,
 	fprintf(stdout, "!!! exmdbc_list_subscriptions_refresh called\n");
 	struct exmdbc_mailbox_list *src_list =
 		(struct exmdbc_mailbox_list *)_src_list;
-	struct exmdbc_simple_context ctx;
-	struct exmdbc_command *cmd;
 	const char *pattern;
 	char list_sep, dest_sep = mail_namespace_get_sep(dest_list->ns);
 
@@ -582,17 +580,6 @@ exmdbc_list_subscriptions_refresh(struct mailbox_list *_src_list,
 		mailbox_tree_init(mail_namespace_get_sep(_src_list->ns));
 
 	//TODO:EXMDBC:
-	// cmd = exmdbc_list_simple_context_init(&ctx, src_list);
-	// if (*src_list->set->exmdbc_list_prefix == '\0')
-	// 	pattern = "*";
-	// else
-	// 	pattern = t_strdup_printf("%s*", src_list->set->exmdbc_list_prefix);
-	// exmdbc_command_set_flags(cmd, IMAPC_COMMAND_FLAG_RETRIABLE);
-	// exmdbc_command_sendf(cmd, "LSUB \"\" %s", pattern);
-	// exmdbc_simple_run(&ctx, &cmd);
-
-	if (ctx.ret < 0)
-		return -1;
 
 	/* replace subscriptions tree in destination */
 	if (dest_list->subscriptions != NULL)
@@ -610,16 +597,9 @@ static int exmdbc_list_set_subscribed(struct mailbox_list *_list,
 {
 	fprintf(stdout, "!!! exmdbc_list_set_subscribed called\n");
 	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)_list;
-	struct exmdbc_command *cmd;
-	struct exmdbc_simple_context ctx;
 
 	//TODO:EXMDBC:
-	// cmd = exmdbc_list_simple_context_init(&ctx, list);
-	// exmdbc_command_set_flags(cmd, IMAPC_COMMAND_FLAG_RETRIABLE);
-	// exmdbc_command_sendf(cmd, set ? "SUBSCRIBE %s" : "UNSUBSCRIBE %s",
-	// 			exmdbc_list_storage_to_remote_name(list, name));
-	// exmdbc_simple_run(&ctx, &cmd);
-	return ctx.ret;
+	return -1;
 }
 
 static int
@@ -630,8 +610,6 @@ exmdbc_list_delete_mailbox(struct mailbox_list *_list, const char *name)
 	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)_list;
 	//struct mailbox_list *fs_list = exmdbc_list_get_fs(list);
 	// enum exmdbc_capability capa;
-	struct exmdbc_command *cmd;
-	struct exmdbc_simple_context ctx;
 
 	// if (exmdbc_storage_client_handle_auth_failure(list->client))
 	// 	return -1;
@@ -660,7 +638,7 @@ exmdbc_list_delete_mailbox(struct mailbox_list *_list, const char *name)
 	// 	const char *fs_name = exmdbc_list_storage_to_fs_name(list, name);
 	// 	(void)fs_list->v.delete_mailbox(fs_list, fs_name);
 	// }
-	return ctx.ret;
+	return -1;
 }
 
 static int
@@ -695,8 +673,6 @@ exmdbc_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)oldlist;
 	//TODO:EXMDBC:
 	// struct mailbox_list *fs_list = exmdbc_list_get_fs(list);
-	struct exmdbc_command *cmd;
-	struct exmdbc_simple_context ctx;
 
 	// if (oldlist != newlist) {
 	// 	mailbox_list_set_error(oldlist, MAIL_ERROR_NOTPOSSIBLE,
@@ -717,7 +693,7 @@ exmdbc_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 	// 	(void)fs_list->v.rename_mailbox(fs_list, old_fs_name,
 	// 					fs_list, new_fs_name);
 	// }
-	return ctx.ret;
+	return -1;
 }
 
 struct mailbox_list exmdbc_mailbox_list = {

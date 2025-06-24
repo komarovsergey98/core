@@ -70,7 +70,7 @@ exmdbc_client_fetch_message_states(struct exmdbc_mailbox *mbox, uint32_t first_u
 
 	const char *username = mbox->box.list->ns->user->username;
 
-	struct folder_metadata_message *messages = calloc(max_messages, sizeof(*messages));
+	struct message_properties *messages = calloc(max_messages, sizeof(*messages));
 	if (!messages) {
 		fprintf(stderr, "Failed to allocate memory\n");
 		return 1;
@@ -90,13 +90,13 @@ exmdbc_client_fetch_message_states(struct exmdbc_mailbox *mbox, uint32_t first_u
 		printf("Message %" PRIu64 ": Subject='%s', From='%s', To='%s', Timestamp=%" PRIu64 "\n",
 			messages[i].mid,
 			messages[i].subject ? messages[i].subject : "(null)",
-			messages[i].from ? messages[i].from : "(null)",
-			messages[i].to ? messages[i].to : "(null)",
-			messages[i].timestamp);
+			messages[i].from_name ? messages[i].from_name : "(null)",
+			messages[i].to_name ? messages[i].to_name : "(null)",
+			messages[i].delivery_time);
 		// Пам'ятай звільняти strdup'ed рядки, якщо потрібно
 		free((void*)messages[i].subject);
-		free((void*)messages[i].from);
-		free((void*)messages[i].to);
+		free((void*)messages[i].from_name);
+		free((void*)messages[i].to_name);
 		free((void*)messages[i].body_plain);
 		free((void*)messages[i].body_html);
 	}

@@ -33,6 +33,6 @@ struct exmdbc_sync_context {
 
 struct mailbox_sync_context *
 exmdbc_mailbox_sync_init(struct mailbox *box, enum mailbox_sync_flags flags);
-int exmdbc_mailbox_sync(struct exmdbc_mailbox *mbox);
+int exmdbc_mailbox_sync(const struct exmdbc_mailbox *mbox);
 
 #endif

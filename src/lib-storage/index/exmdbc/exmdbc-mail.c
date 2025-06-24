@@ -7,6 +7,7 @@
 
 #include "exmdbc-storage.h"
 #include "exmdbc-mailbox.h"
+#include <exmdb_client_c.h>
 
 struct mail *
 exmdbc_mail_alloc(struct mailbox_transaction_context *t,
@@ -132,15 +133,26 @@ static int exmdbc_mail_get_physical_size(struct mail *_mail, uoff_t *size_r)
 	uoff_t old_offset;
 	int ret;
 
-	if (data->physical_size == UOFF_T_MAX)
-		(void)index_mail_get_physical_size(_mail, size_r);
 	if (data->physical_size != UOFF_T_MAX) {
 		*size_r = data->physical_size;
 		return 0;
 	}
 
-	//TODO:EXMDBC:
-	return 0;
+	struct message_properties msg_props;
+	const char *username = mbox->box.list->ns->user->username;
+
+	if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, _mail->uid, username, &msg_props) < 0) {
+		fprintf(stdout, "!!! exmdbc_mail_get_physical_size failed retrieve msg props\n");
+		return -1;
+	}
+
+	if (msg_props.body_plain) {
+		data->physical_size = strlen(msg_props.body_plain);
+		*size_r = data->physical_size;
+		return 0;
+	}
+
+	return index_mail_get_physical_size(_mail, size_r);
 }
 
 static int exmdbc_mail_get_virtual_size(struct mail *_mail, uoff_t *size_r)
@@ -199,9 +211,8 @@ exmdbc_mail_get_first_header(struct mail *_mail, const char *field,
 {
 	fprintf(stdout, "!!! exmdbc_mail_get_first_header called\n");
 	const char *const *values;
-	int ret;
 
-	ret = exmdbc_mail_get_headers(_mail, field, decode_to_utf8, &values);
+	const int ret = exmdbc_mail_get_headers(_mail, field, decode_to_utf8, &values);
 	if (ret <= 0)
 		return ret;
 	*value_r = values[0];
@@ -218,18 +229,11 @@ exmdbc_mail_get_stream(struct mail *_mail, bool get_body,
 	struct index_mail_data *data = &mail->imail.data;
 	enum mail_fetch_field fetch_field;
 
-	if (get_body && !mail->body_fetched &&
-	    mail->imail.data.stream != NULL) {
-		/* we've fetched the header, but we need the body now too */
+	if (get_body && !mail->body_fetched && data->stream != NULL) {
 		index_mail_close_streams(&mail->imail);
-		/* don't re-use any cached header sizes. we may be
-		   intentionally downloading the full body because the header
-		   wasn't returned correctly (e.g. pop3-migration does this) */
 		data->hdr_size_set = FALSE;
 	}
 
-	/* See if we can get it from cache. If the wanted_fields/headers are
-	   set properly, this is usually already done by prefetching. */
 	exmdbc_mail_try_init_stream_from_cache(mail);
 
 	if (data->stream == NULL) {
@@ -251,8 +255,6 @@ exmdbc_mail_get_stream(struct mail *_mail, bool get_body,
 			return -1;
 
 		if (data->stream == NULL) {
-			if (exmdbc_mail_failed(_mail, "BODY[]") < 0)
-				return -1;
 			i_assert(data->stream == NULL);
 
 			/* return the broken email as empty */
@@ -262,18 +264,16 @@ exmdbc_mail_get_stream(struct mail *_mail, bool get_body,
 		}
 	}
 
-	return index_mail_init_stream(&mail->imail, hdr_size, body_size,
-				      stream_r);
+	return index_mail_init_stream(&mail->imail, hdr_size, body_size, stream_r);
 }
 
 bool exmdbc_mail_has_headers_in_cache(struct index_mail *mail,
 				     struct mailbox_header_lookup_ctx *headers)
 {
 	fprintf(stdout, "!!! exmdbc_mail_has_headers_in_cache called\n");
-	struct mail *_mail = &mail->mail.mail;
-	unsigned int i;
+	const struct mail *_mail = &mail->mail.mail;
 
-	for (i = 0; i < headers->count; i++) {
+	for (unsigned int i = 0; i < headers->count; i++) {
 		if (mail_cache_field_exists(_mail->transaction->cache_view,
 					    _mail->seq, headers->idx[i]) <= 0)
 			return FALSE;
@@ -298,12 +298,14 @@ void exmdbc_mail_update_access_parts(struct index_mail *mail)
 static void exmdbc_mail_set_seq(struct mail *_mail, uint32_t seq, bool saving)
 {
 	fprintf(stdout, "!!! exmdbc_mail_set_seq called\n");
-	struct exmdbc_mail *imail = EXMDBC_MAIL(_mail);
-	struct index_mail *mail = &imail->imail;
+	struct exmdbc_mail *exmdbc_mail = EXMDBC_MAIL(_mail);
+	struct index_mail *mail = &exmdbc_mail->imail;
 	struct exmdbc_mailbox *mbox = (struct exmdbc_mailbox *)_mail->box;
 
+	index_mail_set_seq(_mail, seq, saving);
 
-	//TODO:EXMDBC:
+	if (!mail->mail.search_mail && !_mail->saving)
+		exmdbc_mail_prefetch(_mail);
 }
 
 static void
@@ -346,7 +348,7 @@ static void exmdbc_mail_close(struct mail *_mail)
 			mail->body = NULL;
 		}
 	}
-	i_close_fd(&mail->fd);
+	//i_close_fd(&mail->fd);
 	buffer_free(&mail->body);
 	mail->header_fetched = FALSE;
 	mail->body_fetched = FALSE;
@@ -372,8 +374,7 @@ static uint64_t exmdbc_mail_get_modseq(struct mail *_mail)
 {
 	fprintf(stdout, "!!! exmdbc_mail_get_modseq called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
-	struct exmdbc_msgmap *msgmap;
-	const uint64_t *modseqs;
+	struct exmdbc_msgmap *msgmap = 0;
 	unsigned int count;
 	uint32_t rseq;
 
@@ -383,7 +384,7 @@ static uint64_t exmdbc_mail_get_modseq(struct mail *_mail)
 	//TODO:EXMDBC:
 	//msgmap = exmdbc_client_mailbox_get_msgmap(mbox->client_box);
 	if (exmdbc_msgmap_uid_to_rseq(msgmap, _mail->uid, &rseq)) {
-		modseqs = array_get(&mbox->rseq_modseqs, &count);
+		const uint64_t *modseqs = array_get(&mbox->rseq_modseqs, &count);
 		if (rseq <= count)
 			return modseqs[rseq-1];
 	}
@@ -397,23 +398,16 @@ int exmdbcc_mail_fetch(struct mail *_mail, enum mail_fetch_field fields,
 	return -1;
 }
 
-void exmdbc_mailbox_noop(struct exmdbc_mailbox *mbox)
+void exmdbc_mailbox_noop(const struct exmdbc_mailbox *mbox)
 {
 	fprintf(stdout, "!!! exmdbc_mailbox_noop called\n");
-	struct exmdbc_command *cmd;
-	struct exmdbc_simple_context sctx;
 
 	if (mbox->client_box == NULL) {
 		/* mailbox opening hasn't finished yet */
 		return;
 	}
 
-	exmdbc_simple_context_init(&sctx, mbox->storage->client);
 	//TODO:EXMDBC:
-	// cmd = exmdbc_client_mailbox_cmd(mbox->client_box,
-	// 				   exmdbc_simple_callback, &sctx);
-	// exmdbc_command_send(cmd, "NOOP");
-	// exmdbc_simple_run(&sctx, &cmd);
 }
 
 struct mail_vfuncs exmdbc_mail_vfuncs = {
@@ -447,7 +441,7 @@ struct mail_vfuncs exmdbc_mail_vfuncs = {
   /* index_mail_update_keywords */ index_mail_update_keywords,
   /* index_mail_update_modseq */ index_mail_update_modseq,
   /* index_mail_update_pvt_modseq */ index_mail_update_pvt_modseq,
-  /* NULL */
+  NULL,
   /* index_mail_expunge */ index_mail_expunge,
   /* index_mail_set_cache_corrupted */ index_mail_set_cache_corrupted,
   /* index_mail_opened */ index_mail_opened,

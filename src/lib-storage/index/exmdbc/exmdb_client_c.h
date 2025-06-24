@@ -1,9 +1,14 @@
 #pragma once
-#include <stdint.h>
+
 
 #ifdef __cplusplus
 extern "C" {
+
+#include <time.h>
+#include <stdint.h>
+
 #endif
+
 
 struct exmdb_client;
 struct TPROPVAL_ARRAY;
@@ -25,26 +30,29 @@ struct exmdb_folder_metadata {
 
 #define EXMDBC_FIELD_LEN 1024
 
-struct folder_metadata_message {
+struct message_properties {
     uint64_t mid;
+    const char *from_name;
+    const char *from_email;
+    const char *to_name;
+    const char *to_email;
+    const char *cc;
+    const char *bcc;
     const char *subject;
-    const char *from;
-    const char *to;
+    const char *reply_recipment;
+    const char *reply_to;
+    const char *msg_id;
+    time_t submited_time;
+    time_t delivery_time;
+
+    const char *message_header;
+
     const char *body_plain;
     const char *body_html;
-    uint64_t timestamp;
+    uint32_t body_size;
+
     uint32_t flags;
-};
-struct property_metadata {
-    uint64_t mid;
-    const char *subject;
-    const char *from;
-    const char *to;
-    const char *body_plain;
-    const char *body_html;
-    uint32_t low_datetime;
-    uint64_t timestamp;
-    uint32_t flags;
+    uint32_t size;
 };
 
 // C API
@@ -73,11 +81,11 @@ struct property_metadata {
                                 unsigned int max_count,
                                 unsigned int *out_count);
 
-    int exmdbc_read_message_metadata(const char *dir, const char *username, uint64_t mid, struct folder_metadata_message *out);
+    int exmdbc_read_message_metadata(uint64_t message_id, struct TPROPVAL_ARRAY *props, struct message_properties *msgs_props);
 
-    int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t folder_id, struct folder_metadata_message *messages, unsigned int  max_count, const char *username, uint32_t first_uid);
+    int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t folder_id, struct message_properties *messages, unsigned int  max_count, const char *username, uint32_t first_uid);
 
-    int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t message_id, const char *username, struct property_metadata *meta_out);
+    int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t folder_id, uint64_t message_id, const char *username, struct message_properties *msgs_props);
 
     int exmdbc_client_mark_message_read(struct exmdb_client *client, const char *username, uint64_t message_id, int mark_as_read, uint64_t *change_number_out);
 
