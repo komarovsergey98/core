@@ -532,7 +532,7 @@ exmdbc_list_get_path(struct mailbox_list *_list, const char *name,
 }
 
 static const char *
-exmdbc_list_get_temp_prefix(struct mailbox_list *list)
+exmdbc_list_get_temp_prefix(struct mailbox_list *list, bool global)
 {
 	fprintf(stdout, "!!! exmdbc_list_get_temp_prefix called\n");
 	return list->v.get_temp_prefix(list, FALSE);
