@@ -182,9 +182,9 @@ exmdbc_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 			p_new(pool, struct exmdbc_mailbox_list_iterate_context, 1);
 
 		ctx->ctx.pool = pool;
-		ctx->ctx.list = mbox->box.list; // вже містить exmdbc_mailbox_list
+		ctx->ctx.list = mbox->box.list;
 		ctx->ctx.flags = 0;
-		ctx->list_ctx.next_index = 0;
+		ctx->next_index = 0;
 
 		array_create(&ctx->ctx.module_contexts, pool, sizeof(void *), 5);
 
@@ -214,17 +214,7 @@ exmdbc_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 		return NULL;
 	}
 	i_info("exmdbc_mailbox_alloc ping_store complete\n");
-
-	p_array_init(&mbox->untagged_callbacks, pool, 16);
-	p_array_init(&mbox->resp_text_callbacks, pool, 16);
-	p_array_init(&mbox->fetch_requests, pool, 16);
-	p_array_init(&mbox->untagged_fetch_contexts, pool, 16);
-	p_array_init(&mbox->delayed_expunged_uids, pool, 16);
-	p_array_init(&mbox->copy_rollback_expunge_uids, pool, 16);
-	mbox->pending_fetch_cmd = str_new(pool, 128);
-	mbox->pending_copy_cmd = str_new(pool, 128);
 	mbox->prev_mail_cache.fd = -1;
-	exmdbc_mailbox_register_callbacks(mbox);
 
 	i_info("exmdbc_mailbox_alloc(): mailbox '%s' allocated", vname);
 	return &mbox->box;
@@ -235,18 +225,42 @@ const char *exmdbc_mailbox_get_remote_name(struct exmdbc_mailbox *mbox) {
 	return mbox->box.name;
 }
 
-static int
-exmdbc_mailbox_exists(struct mailbox *box, bool auto_boxes, enum mailbox_existence *existence_r) {
-	fprintf(stdout, "!!! exmdbc_mailbox_exists called\n");
+static int exmdbc_mailbox_exists(struct mailbox *box, bool auto_boxes, enum mailbox_existence *existence_r) {
+	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)box->list;
+	const char *name = box->name;
 
-	struct exmdbc_storage *storage = EXMDBC_STORAGE(box->storage);
-	const int ret = exmdbc_client_ping_store(storage->mailbox_dir);
+	fprintf(stderr, "!!! exmdbc_mailbox_exists: checking mailbox '%s'\n", name);
 
-	if (ret == FALSE) {
-		mail_storage_set_error(box->storage, MAIL_ERROR_NOTFOUND,
-					   "Cannot ping store");
-		return -1;
+	if (auto_boxes && mailbox_is_autocreated(box)) {
+		*existence_r = MAILBOX_EXISTENCE_SELECT;
+		return 0;
 	}
+
+	if (!list->refreshed_mailboxes) {
+
+		struct exmdbc_mailbox_list_iterate_context *ctx =
+			p_new(list->list.pool, struct exmdbc_mailbox_list_iterate_context, 1);
+
+		ctx->ctx.pool = list->list.pool;
+		ctx->ctx.list = box->list;
+		ctx->ctx.flags = 0;
+		ctx->next_index = 0;
+
+		array_create(&ctx->ctx.module_contexts, list->list.pool, sizeof(void *), 5);
+		if (exmdbc_list_refresh(list, ctx) < 0) {
+			mail_storage_set_internal_error(box->storage);
+			return -1;
+		}
+	}
+
+	const char *lower_name = t_str_lcase(name);
+	void *folder_id_ptr = hash_table_lookup(list->folder_id_map, lower_name);
+	if (folder_id_ptr != NULL) {
+		*existence_r = MAILBOX_EXISTENCE_SELECT;
+		return 0;
+	}
+
+	*existence_r = MAILBOX_EXISTENCE_NONE;
 	return 0;
 }
 
@@ -326,10 +340,11 @@ int exmdbc_mailbox_select(struct exmdbc_mailbox *mbox) {
 		/* We don't know the latest flags, refresh them. */
 		(void)exmdbc_mailbox_fetch_state(mbox, 1);
 	}
-	mbox->selected = TRUE;
+	mbox->selecting = FALSE;
 	mbox->exists_received = TRUE;
-	mbox->selected = TRUE;
+	// Replacing exmdbc_mailbox_open_callback() by manual calling fetch_state
 
+	exmdbc_mailbox_select_finish(mbox);
 	return 0;
 }
 
@@ -340,6 +355,14 @@ static int exmdbc_mailbox_open(struct mailbox *box) {
 
 	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)box->list;
 	i_info("exmdbc_mailbox_open(): called");
+
+	if (index_storage_mailbox_open(box, FALSE) < 0)
+		return -1;
+
+	if (box->deleting || (box->flags & MAILBOX_FLAG_SAVEONLY) != 0) {
+		/* We don't actually want to SELECT the mailbox. */
+		return 0;
+	}
 
 	i_warning("exmdbc_mailbox_open: mail dir: %s", storage->mailbox_dir);
 	const int ret = exmdbc_client_ping_store(storage->mailbox_dir);
@@ -368,29 +391,12 @@ void exmdbc_mail_cache_free(struct exmdbc_mail_cache *cache) {
 static void exmdbc_mailbox_close(struct mailbox *box) {
 	fprintf(stdout, "!!! exmdbc_mailbox_close called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
-	bool changes;
-
-	(void)exmdbc_mailbox_commit_delayed_trans(mbox, FALSE, &changes);
 	exmdbc_mail_fetch_flush(mbox);
 
-	/* Arriving here we may have fetch contexts still unprocessed,
-	   if there have been no mailbox_sync() after receiving the untagged replies.
-	   Losing these changes isn't a problem, since the same changes will be found
-	   out after connecting to the server the next time. */
-	struct exmdbc_untagged_fetch_ctx *untagged_fetch_context;
-	array_foreach_elem(&mbox->untagged_fetch_contexts, untagged_fetch_context)
-		exmdbc_untagged_fetch_ctx_free(&untagged_fetch_context);
-	array_clear(&mbox->untagged_fetch_contexts);
-
-//TODO:EXMDC:
-//	if (mbox->client_box != NULL)
-//		exmdbc_client_mailbox_close(&mbox->client_box);
 	if (array_is_created(&mbox->rseq_modseqs))
 		array_free(&mbox->rseq_modseqs);
 	if (mbox->sync_view != NULL)
 		mail_index_view_close(&mbox->sync_view);
-	timeout_remove(&mbox->to_idle_delay);
-	timeout_remove(&mbox->to_idle_check);
 	exmdbc_mail_cache_free(&mbox->prev_mail_cache);
 	index_storage_mailbox_close(box);
 }
@@ -540,15 +546,6 @@ static bool exmdbc_is_inconsistent(struct mailbox *box) {
 	return FALSE;
 }
 
-static int
-exmdbc_mailbox_transaction_commit(struct mailbox_transaction_context *t, struct mail_transaction_commit_changes *changes_r)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_transaction_commit called\n");
-	int ret = exmdbc_transaction_save_commit(t);
-	int ret2 = index_transaction_commit(t, changes_r);
-	return ret >= 0 && ret2 >= 0 ? 0 : -1;
-}
-
 void exmdbc_simple_context_init(struct exmdbc_simple_context *sctx,
 				   struct exmdbc_storage_client *client)
 {
@@ -589,11 +586,11 @@ struct mailbox exmdbc_mailbox = {
 		NULL,
 		exmdbc_mailbox_sync_init,
 		index_mailbox_sync_next,
-		exmdbc_mailbox_sync_deinit,
+		index_mailbox_sync_deinit,
 		NULL,
 		exmdbc_notify_changes,
 		index_transaction_begin,
-		exmdbc_mailbox_transaction_commit,
+		index_transaction_commit,
 		index_transaction_rollback,
 		NULL,
 		exmdbc_mail_alloc,

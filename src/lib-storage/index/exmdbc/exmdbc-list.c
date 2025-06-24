@@ -24,26 +24,32 @@
 int exmdbc_list_fill_mailbox_info(struct exmdbc_mailbox_list *list, struct exmdbc_mailbox_list_iterate_context *ctx)
 {
 	struct exmdbc_folder_dto tmp_array[128];
-	unsigned int tmp_count = 0;
 
 	const char *username = list->list.ns->user->username;
-	if (exmdbc_client_get_folders_dtos(list->client->client, tmp_array, username, MAX_MAILBOXES, &tmp_count) < 0)
+	unsigned int count = 0;
+	if (exmdbc_client_get_folders_dtos(list->client->client, tmp_array, username, MAX_MAILBOXES, &count) < 0)
 		return -1;
 
-	ctx->list_ctx.mailbox_count = 0;
+	ctx->mailbox_count = 0;
 
-	for (unsigned int i = 0; i < tmp_count && ctx->list_ctx.mailbox_count < MAX_MAILBOXES; ++i) {
-		struct mailbox_info *info = &ctx->list_ctx.mailboxes[ctx->list_ctx.mailbox_count++];
+	for (unsigned int i = 0; i < count && ctx->mailbox_count < MAX_MAILBOXES; ++i) {
+		struct mailbox_info *info = &ctx->mailboxes[ctx->mailbox_count++];
 		memset(info, 0, sizeof(*info));
 
 		info->vname = p_strdup(ctx->ctx.pool, tmp_array[i].name);
-		info->flags = MAILBOX_NOSELECT;
+		info->flags = tmp_array[i].flags;
 		info->ns = ctx->ctx.list->ns;
-		const char *lower_vname = str_lcase(p_strdup(ctx->ctx.pool, tmp_array[i].name));
-		hash_table_insert(list->folder_id_map,
-			lower_vname,
-			POINTER_CAST(tmp_array[i].folder_id));
 
+		const char *lower_vname = str_lcase(p_strdup(list->pool, tmp_array[i].name));
+
+		if (hash_table_lookup(list->folder_id_map, lower_vname) == NULL) {
+			hash_table_insert(list->folder_id_map,
+							  lower_vname,
+							  POINTER_CAST(tmp_array[i].folder_id));
+			i_debug("exmdbc: adding folder: %s", tmp_array[i].name);
+		} else {
+			i_debug("exmdbc: skipping duplicate folder: %s", tmp_array[i].name);
+		}
 	}
 	list->folder_map_initialized = true;
 	return 0;
@@ -83,8 +89,8 @@ int exmdbc_list_refresh(struct exmdbc_mailbox_list *list, struct exmdbc_mailbox_
 	//TODO: EXMDBC
 	// if (exmdbc_list_try_get_root_sep(list, &sep) < 0)
 	// 	return -1;
-	if (list->refreshed_mailboxes)
-		return 0;
+	// if (list->refreshed_mailboxes)
+	// 	return 0;
 	fprintf(stderr, "refresh for namespace: '%s'\n", list->list.ns->prefix);
 	if ((list->list.ns->flags & NAMESPACE_FLAG_UNUSABLE) != 0) {
 		list->refreshed_mailboxes = TRUE;
@@ -124,10 +130,8 @@ int exmdbc_list_refresh(struct exmdbc_mailbox_list *list, struct exmdbc_mailbox_
 	// 		node->flags &= MAILBOX_CHILDREN;
 	// 	}
 	// }
-	unsigned int count = 0;
 	if (exmdbc_list_fill_mailbox_info(list, ctx) < 0)
 		return -1;
-	ctx->list_ctx.mailbox_count = count;
 	list->refreshed_mailboxes = TRUE;
 	list->refreshed_mailboxes_recently = TRUE;
 	list->last_refreshed_mailboxes = ioloop_time;
@@ -194,13 +198,11 @@ exmdbc_list_iter_init(struct mailbox_list *_list, const char *const *patterns,
 	ctx->ctx.pool = pool;
 	ctx->ctx.list = _list;
 	ctx->ctx.flags = flags;
-	ctx->list_ctx.next_index = 0;
+	ctx->next_index = 0;
 	array_create(&ctx->ctx.module_contexts, pool, sizeof(void *), 5);
 
 
-	if ((flags & MAILBOX_LIST_ITER_SELECT_SUBSCRIBED) == 0 ||
-		(flags & MAILBOX_LIST_ITER_RETURN_NO_FLAGS) == 0)
-		ret = exmdbc_list_refresh(list, ctx);
+	ret = exmdbc_list_refresh(list, ctx);
 
 	list->iter_count++;
 
@@ -289,15 +291,13 @@ exmdbc_list_iter_next(struct mailbox_list_iterate_context *_ctx)
 	struct exmdbc_mailbox_list_iterate_context *ctx =
 		(struct exmdbc_mailbox_list_iterate_context *)_ctx;
 
-	struct exmdbc_list_iterate_context *lc = &ctx->list_ctx;
-
 	if (_ctx->failed)
 		return NULL;
 
-	if (lc->next_index >= lc->mailbox_count)
+	if (ctx->next_index >= ctx->mailbox_count)
 		return NULL;
 
-	return &lc->mailboxes[lc->next_index++];
+	return &ctx->mailboxes[ctx->next_index++];
 
 	// struct exmdbc_mailbox_list_iterate_context *ctx =
 	// 		(struct exmdbc_mailbox_list_iterate_context *)_ctx;
@@ -377,9 +377,11 @@ static struct mailbox_list *exmdbc_list_alloc(void)
 	list = p_new(pool, struct exmdbc_mailbox_list, 1);
 	list->list = exmdbc_mailbox_list;
 	list->list.pool = pool;
+	list->pool = pool_alloconly_create("exmdbc mailbox list", 4096);
+
 	/* separator is set lazily */
 	list->mailboxes = mailbox_tree_init('\0');
-	hash_table_create(&list->folder_id_map, pool, 0, str_hash, strcmp);
+	hash_table_create(&list->folder_id_map, list->pool, 0, str_hash, strcmp);
 
 	mailbox_tree_set_parents_nonexistent(list->mailboxes);
 	return &list->list;
@@ -439,6 +441,8 @@ void exmdbc_list_deinit(struct mailbox_list * _list)
 	}
 	if (list->index_list != NULL)
 		mailbox_list_destroy(&list->index_list);
+	if (list->pool != NULL)
+		pool_unref(&list->pool);
 	mailbox_tree_deinit(&list->mailboxes);
 	if (list->tmp_subscriptions != NULL)
 		mailbox_tree_deinit(&list->tmp_subscriptions);
@@ -564,8 +568,8 @@ exmdbc_list_subscriptions_refresh(struct mailbox_list *_src_list,
 
 	i_assert(src_list->tmp_subscriptions == NULL);
 
-	if (exmdbc_list_try_get_root_sep(src_list, &list_sep) < 0)
-		return -1;
+	// if (exmdbc_list_try_get_root_sep(src_list, &list_sep) < 0)
+	// 	return -1;
 
 	if (src_list->refreshed_subscriptions ||
 		(src_list->list.ns->flags & NAMESPACE_FLAG_UNUSABLE) != 0) {

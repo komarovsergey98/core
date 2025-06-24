@@ -91,35 +91,12 @@ struct exmdbc_mailbox {
 	struct exmdbc_client_mailbox *client_box;
 	uint64_t folder_id;
 
-	struct mail_index_transaction *delayed_sync_trans;
-	struct mail_index_view *sync_view, *delayed_sync_view;
-	struct mail_cache_view *delayed_sync_cache_view;
-	struct mail_cache_transaction_ctx *delayed_sync_cache_trans;
-	struct timeout *to_idle_check, *to_idle_delay;
-
-	ARRAY(struct exmdbc_fetch_request *) fetch_requests;
-	ARRAY(struct exmdbc_untagged_fetch_ctx *) untagged_fetch_contexts;
-	/* if non-empty, contains the latest FETCH command we're going to be
-	   sending soon (but still waiting to see if we can increase its
-	   UID range) */
-	string_t *pending_fetch_cmd;
-	/* if non-empty, contains the latest COPY command we're going to be
-	   sending soon. */
-	string_t *pending_copy_cmd;
-	char *copy_dest_box;
-	struct exmdbc_fetch_request *pending_fetch_request;
-	struct exmdbc_copy_request *pending_copy_request;
-	struct timeout *to_pending_fetch_send;
-
-	ARRAY(struct exmdbc_mailbox_event_callback) untagged_callbacks;
-	ARRAY(struct exmdbc_mailbox_event_callback) resp_text_callbacks;
+	struct mail_index_view *sync_view;
 
 	enum mail_flags permanent_flags;
 	uint32_t highest_nonrecent_uid;
 
 	ARRAY(uint64_t) rseq_modseqs;
-	ARRAY_TYPE(seq_range) delayed_expunged_uids;
-	ARRAY_TYPE(seq_range) copy_rollback_expunge_uids;
 	uint32_t sync_uid_validity;
 	uint32_t sync_uid_next;
 	uint64_t sync_highestmodseq;
@@ -135,7 +112,6 @@ struct exmdbc_mailbox {
 	struct exmdbc_mail_cache prev_mail_cache;
 
 	uint32_t prev_skipped_rseq, prev_skipped_uid;
-	struct imapc_sync_context *sync_ctx;
 
 	const char *guid_fetch_field_name;
 	struct exmdbc_search_context *search_ctx;
@@ -148,31 +124,26 @@ struct exmdbc_mailbox {
 	bool state_fetching_uid1:1;
 	bool state_fetched_success:1;
 	bool rollback_pending:1;
-	bool delayed_untagged_exists:1;
 };
 
-struct exmdbc_fetch_request {
-	ARRAY(struct exmdbc_mail *) mails;
-};
-
-struct exmdbc_untagged_fetch_ctx {
-	pool_t pool;
-
-	/* keywords, flags, guid, modseq and fetch_uid may or may not be
-	   received with an untagged fetch response */
-	ARRAY_TYPE(const_string) keywords;
-	/* Is set if have_flags is TRUE */
-	enum mail_flags flags;
-	const char *guid;
-	uint64_t modseq;
-	uint32_t fetch_uid;
-
-	/* uid is generated locally based on the remote MSN or fetch_uid */
-	uint32_t uid;
-
-	bool have_gmail_labels:1;
-	bool have_flags:1;
-};
+// struct exmdbc_untagged_fetch_ctx {
+// 	pool_t pool;
+//
+// 	/* keywords, flags, guid, modseq and fetch_uid may or may not be
+// 	   received with an untagged fetch response */
+// 	ARRAY_TYPE(const_string) keywords;
+// 	/* Is set if have_flags is TRUE */
+// 	enum mail_flags flags;
+// 	const char *guid;
+// 	uint64_t modseq;
+// 	uint32_t fetch_uid;
+//
+// 	/* uid is generated locally based on the remote MSN or fetch_uid */
+// 	uint32_t uid;
+//
+// 	bool have_gmail_labels:1;
+// 	bool have_flags:1;
+// };
 
 struct exmdbc_copy_request {
 	struct exmdbc_save_context *sctx;
@@ -212,7 +183,6 @@ int exmdbc_save_finish(struct mail_save_context *ctx);
 void exmdbc_save_cancel(struct mail_save_context *ctx);
 int exmdbc_copy(struct mail_save_context *ctx, struct mail *mail);
 
-int exmdbc_transaction_save_commit(struct mailbox_transaction_context *t);
 int exmdbc_transaction_save_commit_pre(struct mail_save_context *ctx);
 void exmdbc_transaction_save_commit_post(struct mail_save_context *ctx,
 					struct mail_index_transaction_commit_result *result);

@@ -13,6 +13,7 @@
 #include "exmdbc-storage.h"
 #include "exmdbc-sync.h"
 
+#include <exmdb_client_c.h>
 #include <stdio.h>
 
 struct exmdbc_sync_command {
@@ -325,103 +326,165 @@ static void exmdbc_sync_index(struct exmdbc_sync_context *ctx)
 	}
 }
 
-static int exmdbc_sync_begin(struct exmdbc_mailbox *mbox, struct exmdbc_sync_context **ctx_r, bool force) {
-	fprintf(stdout, "!!! exmdbc_sync_begin called\n");
-	struct exmdbc_sync_context *ctx;
-	enum mail_index_sync_flags sync_flags;
-	int ret;
+static int find_uid_in_array(uint64_t uid, uint64_t *array, int size) {
+	for (int i = 0; i < size; ++i)
+		if (array[i] == uid)
+			return i;
+	return -1;
+}
 
-	i_assert(!mbox->syncing);
+int exmdbc_mailbox_sync(struct exmdbc_mailbox *mbox)
+{
+    fprintf(stdout, "!!! exmdbc_sync called\n");
+    struct mail_index_view *view = mbox->box.view;
+    struct mail_index_transaction *trans = mail_index_transaction_begin(view, 0);
 
-	ctx = i_new(struct exmdbc_sync_context, 1);
-	ctx->mbox = mbox;
+    const struct mail_index_header *hdr = mail_index_get_header(view);
+	bool index_is_empty = (hdr->uid_validity == 0);
+    bool full_resync = false;
 
-	sync_flags = index_storage_get_sync_flags(&mbox->box) |
-		MAIL_INDEX_SYNC_FLAG_FLUSH_DIRTY;
-	if (!force)
-		sync_flags |= MAIL_INDEX_SYNC_FLAG_REQUIRE_CHANGES;
-
-	ret = mail_index_sync_begin(mbox->box.index, &ctx->index_sync_ctx,
-				    &ctx->sync_view, &ctx->trans,
-				    sync_flags);
-	if (ret <= 0) {
-		if (ret < 0)
-			mailbox_set_index_error(&mbox->box);
-		i_free(ctx);
-		*ctx_r = NULL;
-		return ret;
+	if (index_is_empty) {
+		uint32_t uidvalid = (uint32_t)mbox->folder_id;
+		mail_index_update_header(trans,
+			offsetof(struct mail_index_header, uid_validity),
+			&uidvalid, sizeof(uidvalid), TRUE);
 	}
 
-	i_assert(mbox->sync_view == NULL);
-	i_assert(mbox->delayed_sync_trans == NULL);
-	mbox->sync_view = ctx->sync_view;
-	mbox->delayed_sync_view =
-		mail_index_transaction_open_updated_view(ctx->trans);
-	mbox->delayed_sync_trans = ctx->trans;
-	mbox->delayed_sync_cache_view =
-		mail_cache_view_open(mbox->box.cache, mbox->delayed_sync_view);
-	mbox->delayed_sync_cache_trans =
-		mail_cache_get_transaction(mbox->delayed_sync_cache_view,
-					   mbox->delayed_sync_trans);
-	mbox->min_append_uid = mail_index_get_header(ctx->sync_view)->next_uid;
-
-	mbox->syncing = TRUE;
-	mbox->sync_ctx = ctx;
-
-	if (mbox->delayed_untagged_exists) {
-		bool fetch_send = exmdbc_mailbox_fetch_state(mbox,
-							    mbox->min_append_uid);
-		while (fetch_send && mbox->delayed_untagged_exists)
-			exmdbc_mailbox_run(mbox);
+	if (hdr->uid_validity != (uint32_t)mbox->folder_id) {
+		mail_index_reset(trans);
+		full_resync = true;
 	}
 
-	if (!mbox->box.deleting)
-		exmdbc_sync_index(ctx);
+    unsigned int max_messages = 1000;
+    struct folder_metadata_message *messages = calloc(max_messages, sizeof(*messages));
+    if (!messages) {
+        fprintf(stderr, "Failed to allocate memory\n");
+        return 1;
+    }
+    const char *username = mbox->box.list->ns->user->username;
+    int gromox_count = exmdbc_client_get_folder_messages(
+        mbox->storage->client->client,
+        mbox->folder_id, messages,
+        max_messages, username, 0
+    );
+    if (gromox_count < 0) {
+        fprintf(stderr, "Failed to get folder messages\n");
+        free(messages);
+        return 1;
+    }
 
-	mail_index_view_close(&mbox->delayed_sync_view);
-	mbox->delayed_sync_trans = NULL;
-	mbox->sync_view = NULL;
+    // UID from gromox
+    uint32_t max_uid_from_rpc = 0;
+    uint32_t *gromox_uids = calloc(gromox_count, sizeof(uint32_t));
+    for (int i = 0; i < gromox_count; ++i) {
+        uint32_t uid = (uint32_t)messages[i].mid;
+        gromox_uids[i] = uid;
+        if (uid > max_uid_from_rpc)
+            max_uid_from_rpc = uid;
+    }
+    uint32_t next_uid = max_uid_from_rpc + 1;
 
-	*ctx_r = ctx;
-	return 0;
+    // UID from fovecot
+    uint32_t index_count = mail_index_view_get_messages_count(view);
+    uint32_t *index_uids = calloc(index_count, sizeof(uint32_t));
+    for (uint32_t lseq = 1; lseq <= index_count; ++lseq) {
+        uint32_t uid;
+        mail_index_lookup_uid(view, lseq, &uid);
+        index_uids[lseq - 1] = uid;
+    }
+
+    // Expunge UID
+    for (uint32_t lseq = 1; lseq <= index_count; ++lseq) {
+        uint32_t uid;
+        mail_index_lookup_uid(view, lseq, &uid);
+        if (find_uid_in_array(uid, gromox_uids, gromox_count) < 0) {
+            mail_index_expunge(trans, lseq);
+        }
+    }
+
+    // Add UID
+    for (int i = 0; i < gromox_count; ++i) {
+        uint32_t mid = gromox_uids[i];
+        // full resync
+        if (find_uid_in_array(mid, index_uids, index_count) < 0 &&
+            (full_resync || mid >= hdr->next_uid)) {
+            uint32_t lseq;
+            mail_index_append(trans, mid, &lseq);
+            mail_index_update_flags(trans, lseq, MODIFY_ADD, messages[i].flags);
+            fprintf(stderr, "[EXMDBC] New index was added -> lseq=%u, uid=%u\n", lseq, mid);
+        }
+    }
+
+    // Update flags
+    for (int i = 0; i < gromox_count; ++i) {
+        uint32_t lseq;
+        if (mail_index_lookup_seq(view, gromox_uids[i], &lseq)) {
+            mail_index_update_flags(trans, lseq, MODIFY_REPLACE, messages[i].flags);
+        }
+    }
+
+    if (full_resync) {
+        uint32_t uidvalid = (uint32_t)mbox->folder_id;
+        mail_index_update_header(trans,
+            offsetof(struct mail_index_header, uid_validity),
+            &uidvalid, sizeof(uidvalid), TRUE);
+    }
+
+    mail_index_update_header(trans,
+        offsetof(struct mail_index_header, next_uid),
+        &next_uid, sizeof(next_uid), FALSE);
+
+    mail_index_transaction_commit(&trans);
+
+    free(gromox_uids);
+    free(index_uids);
+    free(messages);
+
+    return 0;
 }
 
-static int exmdbc_sync_finish(struct exmdbc_sync_context **_ctx)
-{
-	fprintf(stdout, "!!! exmdbc_sync_finish called\n");
-
-}
-
-static int exmdbc_untagged_fetch_uid_cmp(struct exmdbc_untagged_fetch_ctx *const *ctx1,
-					struct exmdbc_untagged_fetch_ctx *const *ctx2)
-{
-	fprintf(stdout, "!!! exmdbc_untagged_fetch_uid_cmp called\n");
-
-}
-
-static void exmdbc_sync_handle_untagged_fetches(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_sync_handle_untagged_fetches called\n");
-
-}
-
-static int exmdbc_sync(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_sync called\n");
-
-	return 0;
-}
-
-static void exmdbc_noop_if_needed(struct exmdbc_mailbox *mbox, enum mailbox_sync_flags flags)
-{
-	fprintf(stdout, "!!! exmdbc_noop_if_needed called\n");
-
-}
 
 static bool exmdbc_mailbox_need_initial_fetch(struct exmdbc_mailbox *mbox)
 {
 	fprintf(stdout, "!!! exmdbc_mailbox_need_initial_fetch called\n");
+	if (mbox->box.deleting) {
+		/* If the mailbox is about to be deleted there is no need to
+		   expect initial fetch to be done */
+		return FALSE;
+	}
+	if ((mbox->box.flags & MAILBOX_FLAG_SAVEONLY) != 0) {
+		/* The mailbox is opened only for saving there is no need to
+		   expect initial fetching do be done. */
+		return FALSE;
+	}
 	return TRUE;
+}
+
+static int exmdbc_sync_run(struct maildir_mailbox *mbox,
+				enum mailbox_sync_flags flags, bool force_resync,
+				uint32_t *uid, bool *lost_files_r)
+{
+	// struct exmdbc_sync_context *ctx;
+	// bool retry, lost_files;
+	// int ret;
+	//
+	// T_BEGIN {
+	// 	ctx = maildir_sync_context_new(mbox, flags);
+	// 	ret = maildir_sync_context(ctx, force_resync, uid, lost_files_r);
+	// 	retry = ctx->racing;
+	// 	maildir_sync_deinit(ctx);
+	// } T_END;
+	//
+	// if (retry) T_BEGIN {
+	// 	/* we're racing some file. retry the sync again to see if the
+	// 	   file is really gone or not. if it is, this is a bit of
+	// 	   unnecessary work, but if it's not, this is necessary for
+	// 	   e.g. doveadm force-resync to work. */
+	// 	ctx = maildir_sync_context_new(mbox, 0);
+	// 	ret = maildir_sync_context(ctx, TRUE, NULL, &lost_files);
+	// 	maildir_sync_deinit(ctx);
+	// } T_END;
+	// return ret;
 }
 
 struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum mailbox_sync_flags flags)
@@ -429,8 +492,24 @@ struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum
 	fprintf(stdout, "!!! exmdbc_mailbox_sync_init called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
 	struct exmdbc_mailbox_list *list = mbox->storage->client->_list;
-	bool changes;
 	int ret = 0;
+
+	if (index_mailbox_want_full_sync(&mbox->box, flags)) {
+		struct exmdbc_mailbox_list_iterate_context *ctx =
+			p_new(list->list.pool, struct exmdbc_mailbox_list_iterate_context, 1);
+
+		ctx->ctx.pool = list->list.pool;
+		ctx->ctx.list = box->list;
+		ctx->ctx.flags = 0;
+		ctx->next_index = 0;
+
+		array_create(&ctx->ctx.module_contexts, list->list.pool, sizeof(void *), 5);
+		if (exmdbc_list_refresh(list, ctx) < 0) {
+			mail_storage_set_internal_error(box->storage);
+			return NULL;
+		}
+		ret = exmdbc_mailbox_sync(mbox);
+	}
 
 	if (list != NULL) {
 		if (!list->refreshed_mailboxes &&
@@ -438,37 +517,11 @@ struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum
 			list->refreshed_mailboxes_recently = FALSE;
 	}
 
-	exmdbc_noop_if_needed(mbox, flags);
-
 	if (!mbox->state_fetched_success && !mbox->state_fetching_uid1 &&
 		 exmdbc_mailbox_need_initial_fetch(mbox)) {
 		/* initial FETCH failed already */
 		ret = -1;
 	}
-	if (exmdbc_mailbox_commit_delayed_trans(mbox, FALSE, &changes) < 0)
-		ret = -1;
-	if ((changes || mbox->sync_fetch_first_uid != 0 ||
-	     index_mailbox_want_full_sync(&mbox->box, flags)) &&
-	    ret == 0)
-		ret = exmdbc_sync(mbox);
 
 	return index_mailbox_sync_init(box, flags, ret < 0);
-}
-
-int exmdbc_mailbox_sync_deinit(struct mailbox_sync_context *ctx,
-			      struct mailbox_sync_status *status_r)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_sync_deinit called\n");
-	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(ctx->box);
-	int ret;
-
-	ret = index_mailbox_sync_deinit(ctx, status_r);
-	ctx = NULL;
-
-	if (mbox->client_box == NULL)
-		return ret;
-
-	//TODO:EXMDBC:
-	//exmdbc_client_mailbox_idle(mbox->client_box);
-	return ret;
 }

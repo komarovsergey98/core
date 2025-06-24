@@ -49,158 +49,12 @@ exmdbc_mailbox_get_sync_view(struct exmdbc_mailbox *mbox)
 	return mbox->sync_view;
 }
 
-
-static void exmdbc_mailbox_init_delayed_trans(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_init_delayed_trans called\n");
-	if (mbox->delayed_sync_trans != NULL)
-		return;
-
-	i_assert(mbox->delayed_sync_cache_view == NULL);
-	i_assert(mbox->delayed_sync_cache_trans == NULL);
-
-	mbox->delayed_sync_trans =
-		mail_index_transaction_begin(exmdbc_mailbox_get_sync_view(mbox),
-					MAIL_INDEX_TRANSACTION_FLAG_EXTERNAL);
-	mbox->delayed_sync_view =
-		mail_index_transaction_open_updated_view(mbox->delayed_sync_trans);
-
-	mbox->delayed_sync_cache_view =
-		mail_cache_view_open(mbox->box.cache, mbox->delayed_sync_view);
-	mbox->delayed_sync_cache_trans =
-		mail_cache_get_transaction(mbox->delayed_sync_cache_view,
-					   mbox->delayed_sync_trans);
-}
-
-static int exmdbc_mailbox_commit_delayed_expunges(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_commit_delayed_expunges called\n");
-	struct mail_index_view *view = exmdbc_mailbox_get_sync_view(mbox);
-	struct mail_index_transaction *trans;
-	struct seq_range_iter iter;
-	unsigned int n;
-	uint32_t lseq, uid;
-	int ret;
-
-	trans = mail_index_transaction_begin(view,
-			MAIL_INDEX_TRANSACTION_FLAG_EXTERNAL);
-
-	seq_range_array_iter_init(&iter, &mbox->delayed_expunged_uids); n = 0;
-	while (seq_range_array_iter_nth(&iter, n++, &uid)) {
-		if (mail_index_lookup_seq(view, uid, &lseq))
-			mail_index_expunge(trans, lseq);
-	}
-	array_clear(&mbox->delayed_expunged_uids);
-	ret = mail_index_transaction_commit(&trans);
-	if (ret < 0)
-		mailbox_set_index_error(&mbox->box);
-	return ret;
-}
-
-int exmdbc_mailbox_commit_delayed_trans(struct exmdbc_mailbox *mbox,
-				       bool force, bool *changes_r)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_commit_delayed_trans called\n");
-	int ret = 0;
-
-	*changes_r = FALSE;
-
-	if (mbox->delayed_sync_view != NULL)
-		mail_index_view_close(&mbox->delayed_sync_view);
-	if (mbox->delayed_sync_trans == NULL)
-		;
-	else if (!mbox->selected && !force) {
-		/* ignore any changes done during SELECT */
-		mail_index_transaction_rollback(&mbox->delayed_sync_trans);
-	} else {
-		if (mail_index_transaction_commit(&mbox->delayed_sync_trans) < 0) {
-			mailbox_set_index_error(&mbox->box);
-			ret = -1;
-		}
-		*changes_r = TRUE;
-	}
-	mbox->delayed_sync_cache_trans = NULL;
-	if (mbox->delayed_sync_cache_view != NULL)
-		mail_cache_view_close(&mbox->delayed_sync_cache_view);
-
-	if (array_count(&mbox->delayed_expunged_uids) > 0) {
-		/* delayed expunges - commit them now in a separate
-		   transaction. Reopen mbox->sync_view to see changes
-		   committed in delayed_sync_trans. */
-		if (mbox->sync_view != NULL)
-			mail_index_view_close(&mbox->sync_view);
-		if (exmdbc_mailbox_commit_delayed_expunges(mbox) < 0)
-			ret = -1;
-	}
-
-	if (mbox->sync_view != NULL)
-		mail_index_view_close(&mbox->sync_view);
-	i_assert(mbox->delayed_sync_trans == NULL);
-	i_assert(mbox->delayed_sync_view == NULL);
-	i_assert(mbox->delayed_sync_cache_trans == NULL);
-	return ret;
-}
-
-static void
-exmdbc_mailbox_index_expunge(struct exmdbc_mailbox *mbox, uint32_t uid)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_index_expunge called\n");
-	uint32_t lseq;
-
-	if (mail_index_lookup_seq(mbox->sync_view, uid, &lseq))
-		mail_index_expunge(mbox->delayed_sync_trans, lseq);
-	else if (mail_index_lookup_seq(mbox->delayed_sync_view, uid, &lseq)) {
-		/* this message exists only in this transaction. lib-index
-		   can't currently handle expunging anything except the last
-		   appended message in a transaction, and fixing it would be
-		   quite a lot of trouble. so instead we'll just delay doing
-		   this expunge until after the current transaction has been
-		   committed. */
-		seq_range_array_add(&mbox->delayed_expunged_uids, uid);
-	} else {
-		/* already expunged by another session */
-	}
-}
-
-static void
-exmdbc_mailbox_fetch_state_finish(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_fetch_state_finish called\n");
-	uint32_t lseq, uid, msg_count;
-
-	if (mbox->sync_next_lseq == 0) {
-		/* FETCH n:*, not 1:* */
-		i_assert(mbox->state_fetched_success ||
-			 (mbox->box.flags & MAILBOX_FLAG_SAVEONLY) != 0);
-		return;
-	}
-
-	/* if we haven't seen FETCH reply for some messages at the end of
-	   mailbox they've been externally expunged. */
-	msg_count = mail_index_view_get_messages_count(mbox->delayed_sync_view);
-	for (lseq = mbox->sync_next_lseq; lseq <= msg_count; lseq++) {
-		mail_index_lookup_uid(mbox->delayed_sync_view, lseq, &uid);
-		if (uid >= mbox->sync_uid_next) {
-			/* another process already added new messages to index
-			   that our IMAP connection hasn't seen yet */
-			break;
-		}
-		exmdbc_mailbox_index_expunge(mbox, uid);
-	}
-
-	mbox->sync_next_lseq = 0;
-	mbox->sync_next_rseq = 0;
-	mbox->state_fetched_success = TRUE;
-}
-
 void exmdbc_mailbox_select_finish(struct exmdbc_mailbox *mbox)
 {
 	fprintf(stdout, "!!! exmdbc_mailbox_select_finish called\n");
 	if (mbox->exists_count == 0) {
 		/* no mails. expunge everything. */
 		mbox->sync_next_lseq = 1;
-		exmdbc_mailbox_init_delayed_trans(mbox);
-		exmdbc_mailbox_fetch_state_finish(mbox);
 	} else {
 		/* We don't know the latest flags, refresh them. */
 		(void)exmdbc_mailbox_fetch_state(mbox, 1);
@@ -209,43 +63,103 @@ void exmdbc_mailbox_select_finish(struct exmdbc_mailbox *mbox)
 }
 
 bool
+exmdbc_client_fetch_message_states(struct exmdbc_mailbox *mbox, uint32_t first_uid)
+{
+	fprintf(stdout, "!!! exmdbc_client_fetch_message_states called\n");
+	unsigned int max_messages = 100;
+
+	const char *username = mbox->box.list->ns->user->username;
+
+	struct folder_metadata_message *messages = calloc(max_messages, sizeof(*messages));
+	if (!messages) {
+		fprintf(stderr, "Failed to allocate memory\n");
+		return 1;
+	}
+
+	int count = exmdbc_client_get_folder_messages(mbox->storage->client->client, mbox->folder_id, messages,
+		max_messages, username, first_uid);
+
+	if (count < 0) {
+		fprintf(stderr, "Failed to get folder messages\n");
+		free(messages);
+		return 1;
+	}
+
+	printf("Got %d messages from folder %" PRIu64 "\n", count, mbox->folder_id);
+	for (int i = 0; i < count; ++i) {
+		printf("Message %" PRIu64 ": Subject='%s', From='%s', To='%s', Timestamp=%" PRIu64 "\n",
+			messages[i].mid,
+			messages[i].subject ? messages[i].subject : "(null)",
+			messages[i].from ? messages[i].from : "(null)",
+			messages[i].to ? messages[i].to : "(null)",
+			messages[i].timestamp);
+		// Пам'ятай звільняти strdup'ed рядки, якщо потрібно
+		free((void*)messages[i].subject);
+		free((void*)messages[i].from);
+		free((void*)messages[i].to);
+		free((void*)messages[i].body_plain);
+		free((void*)messages[i].body_html);
+	}
+
+	free(messages);
+	return 0;
+
+}
+
+bool
 exmdbc_mailbox_fetch_state(struct exmdbc_mailbox *mbox, uint32_t first_uid)
 {
-	// fprintf(stdout, "!!! exmdbc_mailbox_fetch_state called\n");
-	//
-	// if (mbox->exists_count == 0) {
-	// 	/* empty mailbox - no point in fetching anything.
-	// 	   just make sure everything is expunged in local index.
-	// 	   Delay calling imapc_mailbox_fetch_state_finish() until
-	// 	   SELECT finishes, so we see the updated UIDNEXT. */
-	// 	return FALSE;
-	// }
-	// if (mbox->state_fetching_uid1) {
-	// 	/* retrying after reconnection - don't send duplicate */
-	// 	return FALSE;
-	// }
-	//
-	// string_t *str = t_str_new(64);
-	// str_printfa(str, "UID FETCH %u:* (FLAGS", first_uid);
-	// if (exmdbc_mailbox_has_modseqs(mbox)) {
+	fprintf(stdout, "!!! exmdbc_mailbox_fetch_state called\n");
+
+
+	if (mbox->exists_count == 0) {
+		/* empty mailbox - no point in fetching anything.
+		   just make sure everything is expunged in local index.
+		   Delay calling imapc_mailbox_fetch_state_finish() until
+		   SELECT finishes, so we see the updated UIDNEXT. */
+		return FALSE;
+	}
+	if (mbox->state_fetching_uid1) {
+		/* retrying after reconnection - don't send duplicate */
+		return FALSE;
+	}
+
+	//TODO:EXMDBC: check mailbox modseq info retrived by dtos
+	// if (imapc_mailbox_has_modseqs(mbox)) {
 	// 	str_append(str, " MODSEQ");
 	// 	mail_index_modseq_enable(mbox->box.index);
 	// }
-	// str_append_c(str, ')');
+
+	//TODO:EXMDBC: ask jan for GMAIL features support
+	// if (IMAPC_BOX_HAS_FEATURE(mbox, IMAPC_FEATURE_GMAIL_MIGRATION)) {
+	// 	enum mailbox_info_flags flags;
 	//
-	// cmd = imapc_client_mailbox_cmd(mbox->client_box,
-	// 	imapc_mailbox_fetch_state_callback, mbox);
-	// if (first_uid == 1) {
-	// 	mbox->sync_next_lseq = 1;
-	// 	mbox->sync_next_rseq = 1;
-	// 	mbox->state_fetched_success = FALSE;
-	// 	/* only the FETCH 1:* is retriable - others will be retried
-	// 	   by the 1:* after the reconnection */
-	// 	imapc_command_set_flags(cmd, IMAPC_COMMAND_FLAG_RETRIABLE);
+	// 	if (!mail_index_is_in_memory(mbox->box.index)) {
+	// 		/* these can be efficiently fetched among flags and
+	// 		   stored into cache */
+	// 		str_append(str, " X-GM-MSGID");
+	// 	}
+	// 	/* do this only for the \All mailbox */
+	// 	if (imapc_list_get_mailbox_flags(mbox->box.list,
+	// 					 mbox->box.name, &flags) == 0 &&
+	// 		(flags & MAILBOX_SPECIALUSE_ALL) != 0)
+	// 		str_append(str, " X-GM-LABELS");
+	//
 	// }
-	// mbox->state_fetching_uid1 = first_uid == 1;
-	// imapc_command_send(cmd, str_c(str));
-	// return TRUE;
+
+	if (first_uid == 1) {
+		mbox->sync_next_lseq = 1;
+		mbox->sync_next_rseq = 1;
+		mbox->state_fetched_success = FALSE;
+	}
+	mbox->state_fetching_uid1 = first_uid == 1;
+
+	//TODO:EXMDBC do fetch from GromoxRPC
+	// exmdbc_client_fetch_message_states(mbox, first_uid);
+	exmdbc_mailbox_sync(mbox);
+
+	mbox->state_fetching_uid1 = FALSE;
+	return TRUE;
 }
 
 static bool keywords_are_equal(struct mail_keywords *kw,
@@ -273,82 +187,6 @@ bool exmdbc_mailbox_name_equals(struct exmdbc_mailbox *mbox,
 		return TRUE;
 	}
 	return FALSE;
-}
-
-void exmdbc_untagged_fetch_ctx_free(struct exmdbc_untagged_fetch_ctx **_ctx)
-{
-	fprintf(stdout, "!!! exmdbc_untagged_fetch_ctx_free called\n");
-	struct exmdbc_untagged_fetch_ctx *ctx = *_ctx;
-
-	*_ctx = NULL;
-	i_assert(ctx != NULL);
-
-	pool_unref(&ctx->pool);
-}
-
-void exmdbc_untagged_fetch_update_flags(struct exmdbc_mailbox *mbox,
-				       struct exmdbc_untagged_fetch_ctx *ctx,
-				       struct mail_index_view *view,
-				       uint32_t lseq)
-{
-	fprintf(stdout, "!!! exmdbc_untagged_fetch_update_flags called\n");
-	ARRAY_TYPE(keyword_indexes) old_kws;
-	struct mail_keywords *kw;
-	const struct mail_index_record *rec = NULL;
-	const char *atom;
-
-	if (!ctx->have_flags)
-		return;
-
-	rec = mail_index_lookup(view, lseq);
-	if (rec->flags != ctx->flags) {
-		mail_index_update_flags(mbox->delayed_sync_trans, lseq,
-					MODIFY_REPLACE, ctx->flags);
-	}
-
-	t_array_init(&old_kws, 8);
-	mail_index_lookup_keywords(view, lseq, &old_kws);
-
-	if (ctx->have_gmail_labels) {
-		/* add keyword for mails that have GMail labels.
-		   this can be used for "All Mail" mailbox migrations
-		   with dsync */
-		atom = "$GMailHaveLabels";
-		array_push_back(&ctx->keywords, &atom);
-	}
-
-	array_append_zero(&ctx->keywords);
-	kw = mail_index_keywords_create(mbox->box.index,
-					array_front(&ctx->keywords));
-	if (!keywords_are_equal(kw, &old_kws)) {
-		mail_index_update_keywords(mbox->delayed_sync_trans,
-					   lseq, MODIFY_REPLACE, kw);
-	}
-	mail_index_keywords_unref(&kw);
-}
-
-void exmdbc_mailbox_register_untagged(struct exmdbc_mailbox *mbox,
-				     const char *key,
-				     exmdbc_mailbox_callback_t *callback)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_register_untagged called\n");
-	struct exmdbc_mailbox_event_callback *cb;
-
-	cb = array_append_space(&mbox->untagged_callbacks);
-	cb->name = p_strdup(mbox->box.pool, key);
-	cb->callback = callback;
-}
-
-void exmdbc_mailbox_register_resp_text(struct exmdbc_mailbox *mbox,
-				      const char *key,
-				      exmdbc_mailbox_callback_t *callback)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_register_resp_text called\n");
-	struct exmdbc_mailbox_event_callback *cb;
-
-	cb = array_append_space(&mbox->resp_text_callbacks);
-	cb->name = p_strdup(mbox->box.pool, key);
-	cb->callback = callback;
 }
 
 void exmdbc_mailbox_run_nofetch(struct exmdbc_mailbox *mbox)

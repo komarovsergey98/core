@@ -8,22 +8,18 @@
 #define MAX_MAILBOXES 128
 
 
-struct exmdbc_list_iterate_context {
-	struct mailbox_list_iterate_context ctx;
-	struct mailbox_info mailboxes[MAX_MAILBOXES];
-	unsigned int mailbox_count;
-	unsigned int next_index;
-};
-
 struct exmdbc_mailbox_list_iterate_context {
 	struct mailbox_list_iterate_context ctx;
 	struct mailbox_tree_context *tree;
 	struct mailbox_node *ns_root;
 
-	struct exmdbc_list_iterate_context list_ctx;
 	struct mailbox_tree_iterate_context *iter;
 	struct mailbox_info info;
 	string_t *special_use;
+
+	struct mailbox_info mailboxes[MAX_MAILBOXES];
+	unsigned int mailbox_count;
+	unsigned int next_index;
 };
 
 struct exmdbc_mailbox_list {
@@ -32,6 +28,7 @@ struct exmdbc_mailbox_list {
 	struct mailbox_list *index_list;
 	struct settings_instance *index_list_set_instance;
 
+	pool_t pool;
 	HASH_TABLE(const char *, void *) folder_id_map;
 
 

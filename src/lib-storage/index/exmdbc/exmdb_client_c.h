@@ -33,6 +33,7 @@ struct folder_metadata_message {
     const char *body_plain;
     const char *body_html;
     uint64_t timestamp;
+    uint32_t flags;
 };
 struct property_metadata {
     uint64_t mid;
@@ -43,6 +44,7 @@ struct property_metadata {
     const char *body_html;
     uint32_t low_datetime;
     uint64_t timestamp;
+    uint32_t flags;
 };
 
 // C API
@@ -73,7 +75,7 @@ struct property_metadata {
 
     int exmdbc_read_message_metadata(const char *dir, const char *username, uint64_t mid, struct folder_metadata_message *out);
 
-    int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t folder_id, struct folder_metadata_message *messages, unsigned int  max_count, const char *username);
+    int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t folder_id, struct folder_metadata_message *messages, unsigned int  max_count, const char *username, uint32_t first_uid);
 
     int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t message_id, const char *username, struct property_metadata *meta_out);
 

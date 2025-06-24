@@ -1,5 +1,6 @@
 #include "exmdb_client_c.h"
 
+#include <inttypes.h>
 #include <libHX/scope.hpp>
 #include <gromox/exmdb_client.hpp>
 #include <gromox/exmdb_rpc.hpp>
@@ -7,6 +8,46 @@
 #include <gromox/util.hpp>
 #include <gromox/rop_util.hpp>
 
+enum mail_flags {
+	MAIL_ANSWERED	= 0x01,
+	MAIL_FLAGGED	= 0x02,
+	MAIL_DELETED	= 0x04,
+	MAIL_SEEN	= 0x08,
+	MAIL_DRAFT	= 0x10,
+	MAIL_RECENT	= 0x20,
+
+	MAIL_FLAGS_MASK = 0x3f,
+	MAIL_FLAGS_NONRECENT = (MAIL_FLAGS_MASK ^ MAIL_RECENT)
+};
+
+enum mailbox_info_flags {
+	MAILBOX_NOSELECT		= 0x001,
+	MAILBOX_NONEXISTENT		= 0x002,
+	MAILBOX_CHILDREN		= 0x004,
+	MAILBOX_NOCHILDREN		= 0x008,
+	MAILBOX_NOINFERIORS		= 0x010,
+	MAILBOX_MARKED			= 0x020,
+	MAILBOX_UNMARKED		= 0x040,
+	MAILBOX_SUBSCRIBED		= 0x080,
+	MAILBOX_CHILD_SUBSCRIBED	= 0x100,
+	MAILBOX_CHILD_SPECIALUSE	= 0x200,
+
+	/* Internally used by lib-storage, use mailbox_info.special_use
+	   to actually access these: */
+	MAILBOX_SPECIALUSE_ALL		= 0x00010000,
+	MAILBOX_SPECIALUSE_ARCHIVE	= 0x00020000,
+	MAILBOX_SPECIALUSE_DRAFTS	= 0x00040000,
+	MAILBOX_SPECIALUSE_FLAGGED	= 0x00080000,
+	MAILBOX_SPECIALUSE_JUNK		= 0x00100000,
+	MAILBOX_SPECIALUSE_SENT		= 0x00200000,
+	MAILBOX_SPECIALUSE_TRASH	= 0x00400000,
+	MAILBOX_SPECIALUSE_IMPORTANT	= 0x00800000,
+#define MAILBOX_SPECIALUSE_MASK		  0x00ff0000
+
+	/* Internally used by lib-storage: */
+	MAILBOX_SELECT			= 0x20000000,
+	MAILBOX_MATCHED			= 0x40000000
+};
 
 using gromox::exmdb_client_remote;
 
@@ -136,6 +177,20 @@ int exmdbc_client_get_folders_dtos(struct exmdb_client *client,
 		dto.name = name;
 		// dto.content_count = content_count;
 		dto.flags = 0; // MAILBOX_NOSELECT;
+		if (fid == rop_util_make_eid_ex(1, PRIVATE_FID_DRAFT))
+			dto.flags |= MAILBOX_SPECIALUSE_DRAFTS;
+
+		if (fid == rop_util_make_eid_ex(1, PRIVATE_FID_SENT_ITEMS))
+			dto.flags |= MAILBOX_SPECIALUSE_SENT;
+
+		if (fid == rop_util_make_eid_ex(1, PRIVATE_FID_JUNK))
+			dto.flags |= MAILBOX_SPECIALUSE_JUNK;
+
+		if (fid == rop_util_make_eid_ex(1, PRIVATE_FID_DELETED_ITEMS))
+			dto.flags |= MAILBOX_SPECIALUSE_TRASH;
+
+		if (fid == rop_util_make_eid_ex(1, PRIVATE_FID_INBOX))
+			dto.flags |= MAILBOX_SELECT;
 		dto.folder_id = static_cast<unsigned long long>(rop_util_get_gc_value(*folder_id));
 	}
 
@@ -171,46 +226,20 @@ int exmdbc_client_get_folder_dtos(struct exmdb_client *client, uint64_t folder_i
 
 	uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
 
-	FOLDER_CHANGES fldchgs = {};
-	uint64_t last_cn = 0;
-	uint64_t fid = 0;
-	EID_ARRAY given_fids = {};
-	EID_ARRAY deleted_fids = {};
-	auto empty_idset = idset::create(idset::type::id_packed);
 
-	uint32_t table_id = 0, row_count = 0;
-	fid = rop_util_make_eid_ex(1, PRIVATE_FID_IPMSUBTREE);
-	BOOL ret = exmdb_client_remote::load_hierarchy_table(eid, eid_folder, nullptr, 0, nullptr, &table_id, &row_count);
-	if (ret != TRUE) {
-		fprintf(stderr, "[EXMDB] query_table failed for folder_id=0x%llx\n", LLU{folder_id});
-		free(eid);
+
+	static constexpr uint32_t ftags2[] = {PR_CONTENT_COUNT, PR_ASSOC_CONTENT_COUNT, PR_FOLDER_CHILD_COUNT, PR_CHANGE_KEY};
+	static constexpr PROPTAG_ARRAY ftaghdr2 = {std::size(ftags2), deconst(ftags2)};
+	TPROPVAL_ARRAY props{};
+	if (!exmdb_client_remote::get_folder_properties(eid, CP_ACP, eid_folder, &ftaghdr2, &props)) {
+		fprintf(stderr, "fid 0x%llx get_folder_props failed\n", LLU{eid_folder});
 		return -1;
 	}
-
-	static constexpr uint32_t ftags[] = {
-		PR_CONTENT_COUNT,       // uint32_t
-		PR_CHANGE_KEY           // MODSEQ (optional)
-	};
-
-	static constexpr PROPTAG_ARRAY ftaghdr = {std::size(ftags), deconst(ftags)};
-	tarray_set rowset{};
-	if (!exmdb_client_remote::query_table(eid, nullptr, CP_ACP, table_id,
-		&ftaghdr, 0, row_count, &rowset)) {
-		fprintf(stderr, "fid 0x%llx query_table failed\n", LLU{rop_util_get_gc_value(fid)});
-		return EXIT_FAILURE;
-		}
-	exmdb_client_remote::unload_table(eid, table_id);
-
-	if (rowset.count == 0 || rowset.begin() == rowset.end()) {
-		fprintf(stderr, "[EXMDB] No metadata row found for folder_id=0x%llx\n", LLU{folder_id});
-		free(eid);
-		return -1;
-	}
-
-	const TPROPVAL_ARRAY &props = *rowset.begin();
-
-	auto pnum = props.get<uint32_t>(PR_CONTENT_COUNT);
+	auto pnum = props.get<const uint32_t>(PR_CONTENT_COUNT);
+	auto panum = props.get<const uint32_t>(PR_ASSOC_CONTENT_COUNT);
+	auto pcnum = props.get<const uint32_t>(PR_FOLDER_CHILD_COUNT);
 	auto pmodseq = props.get<uint64_t>(PR_CHANGE_KEY);
+
 
 
 	folder_metadata->num_messages = pnum ? *pnum : 0;
@@ -220,6 +249,7 @@ int exmdbc_client_get_folder_dtos(struct exmdb_client *client, uint64_t folder_i
 
 	// Free memory
 	free(eid);
+	return 0;
 }
 
 void exmdb_client_set_dir(struct exmdb_client *client, const char *dir)
@@ -295,10 +325,12 @@ int exmdbc_client_get_message_dtos(struct exmdb_client *client, uint64_t folder_
         PR_DISPLAY_TO_A,
         PR_BODY_A,
         PR_BODY_HTML_A,
-        PR_CLIENT_SUBMIT_TIME
+        PR_CLIENT_SUBMIT_TIME,
+    	PR_MESSAGE_FLAGS,
+    	PR_FLAG_STATUS,
+    	PR_ICON_INDEX,
+    	PR_MESSAGE_SIZE
     };
-
-	//TODO:EXMDBC : add PR_MESSAGE_FLAGS, PR_INTERNAL_DATE, PR_MESSAGE_SIZE
     static constexpr PROPTAG_ARRAY ptag_array = { std::size(tags), deconst(tags) };
 
     tarray_set rowset = {};
@@ -361,6 +393,10 @@ int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t m
 		PR_BODY_A,
 		PR_BODY_HTML_A,
 		PR_CLIENT_SUBMIT_TIME,
+		PR_MESSAGE_FLAGS,
+		PR_FLAG_STATUS,
+		PR_ICON_INDEX,
+		PR_MESSAGE_SIZE
 	};
 	PROPTAG_ARRAY tag_array = {
 		(uint16_t)(sizeof(tags) / sizeof(tags[0])),
@@ -374,14 +410,35 @@ int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t m
 	if (!ok) return -1;
 
 	meta_out->mid        = message_id;
-	meta_out->subject    = (const char *)out_props.getval(PR_SUBJECT_A);
-	meta_out->from       = (const char *)out_props.getval(PR_SENDER_NAME_A);
-	meta_out->to         = (const char *)out_props.getval(PR_DISPLAY_TO_A);
-	meta_out->body_plain = (const char *)out_props.getval(PR_BODY_A);
-	meta_out->body_html  = (const char *)out_props.getval(PR_BODY_HTML_A);
+	meta_out->subject    = static_cast<const char *>(out_props.getval(PR_SUBJECT_A));
+	meta_out->from       = static_cast<const char *>(out_props.getval(PR_SENDER_NAME_A));
+	meta_out->to         = static_cast<const char *>(out_props.getval(PR_DISPLAY_TO_A));
+	meta_out->body_plain = static_cast<const char *>(out_props.getval(PR_BODY_A));
+	meta_out->body_html  = static_cast<const char *>(out_props.getval(PR_BODY_HTML_A));
 
 	const void *val = out_props.getval(PR_CLIENT_SUBMIT_TIME);
-	meta_out->timestamp = val ? *reinterpret_cast<const uint64_t *>(val) : 0;
+	meta_out->timestamp = val != nullptr ? *static_cast<const uint64_t *>(val) : 0;
+
+	const uint32_t* flags_ptr = static_cast<const uint32_t*>(out_props.getval(PR_MESSAGE_FLAGS));
+	uint32_t flags = (flags_ptr != nullptr) ? *flags_ptr : 0;
+	if (flags & MSGFLAG_UNSENT /* 0x8 */)
+		meta_out->flags += MAIL_DRAFT;
+	if (flags & MSGFLAG_READ /* 0x1 */)
+		meta_out->flags += MAIL_SEEN;
+
+	const auto flag_status = out_props.get<const uint32_t>(PR_FLAG_STATUS);
+	if (flag_status != nullptr && *flag_status == followupFlagged /* 0x2 */)
+		meta_out->flags += MAIL_FLAGGED;
+
+	const auto *icon_index  = out_props.get<const uint32_t>(PR_ICON_INDEX);
+	if (icon_index != nullptr && *icon_index == MAIL_ICON_REPLIED /* 0x105 */)
+		meta_out->flags += MAIL_ANSWERED;
+
+	//TODO:EMXDBC: Not found analogue. Need to investigate more
+	// if (icon_index != nullptr && *icon_index == MAIL_ICON_FORWARDED /* 0x106 */)
+	// 	meta_out->flags += "\\Forwarded";
+
+	// There is Deleted in IMAP\Dovecot but not in MAPI so i skipping it for reading and when writing i will need to delete it before saving. (Need to discuss with Jan)
 
 	return 0;
 }
@@ -411,5 +468,106 @@ int exmdbc_client_mark_message_read(struct exmdb_client *client, const char *use
 	return 0;
 }
 
+int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t folder_id,
+    struct folder_metadata_message *messages, unsigned int max_count,
+    const char *username, uint32_t first_uid)
+{
+    if (!client || !messages || !username) {
+        fprintf(stderr, "[EXMDBC] Invalid arguments\n");
+        return -1;
+    }
+
+	STORE_ENTRYID store = {0, 0, 0, 0, {}, 0, deconst(""), deconst("")};
+	store.wrapped_provider_uid = g_muidStorePrivate;
+	store.pmailbox_dn = deconst(username);
+	store.pserver_name = deconst(username);
+	char *eid = nullptr;
+	unsigned int user_id = 0, domain_id = 0;
+
+	fprintf(stderr, "[EXMDB] Resolving EID for user: %s\n", username);
+	if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id)) {
+		fprintf(stderr, "[EXMDB] store_eid_to_user failed for user: %s\n", username);
+		return -1;
+	}
+
+	fprintf(stderr, "[EXMDB] store_eid_to_user -> eid=%s\n", eid);
+
+
+	uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
+
+    uint32_t table_id = 0;
+    uint32_t row_count = 0;
+
+    if (!exmdb_client_remote::load_content_table(eid, CP_ACP, eid_folder,
+            username, 0, nullptr, nullptr, &table_id, &row_count)) {
+        fprintf(stderr, "[EXMDBC] load_content_table failed for folder %" PRIu64 "\n", folder_id);
+        return -1;
+    }
+
+    if (row_count > max_count)
+        row_count = max_count;
+
+    static constexpr gromox::proptag_t required_tags[] = {
+        PidTagMid,
+        PR_SUBJECT,
+        PR_SENDER_NAME,
+        PR_DISPLAY_TO,
+        PR_BODY_HTML,
+        PR_BODY,
+        PR_CLIENT_SUBMIT_TIME
+    };
+
+    PROPTAG_ARRAY tags = {sizeof(required_tags)/sizeof(required_tags[0]), deconst(required_tags)};
+
+    TARRAY_SET tset{};
+    if (!exmdb_client_remote::query_table(eid, nullptr, CP_ACP, table_id,
+                                         &tags, 0, row_count, &tset)) {
+        fprintf(stderr, "[EXMDBC] query_table failed\n");
+        exmdb_client_remote::unload_table(eid, table_id);
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < tset.count; i++) {
+        auto &row = *tset.pparray[i];
+        messages[i].mid = row.get<const uint64_t>(PidTagMid) ? rop_util_get_gc_value(*row.get<const uint64_t>(PidTagMid)) : 0;
+
+        const char *subject = row.get<const char>(PR_SUBJECT);
+        messages[i].subject = subject ? strdup(subject) : nullptr;
+
+        const char *from = row.get<const char>(PR_SENDER_NAME);
+        messages[i].from = from ? strdup(from) : nullptr;
+
+        const char *to = row.get<const char>(PR_DISPLAY_TO);
+        messages[i].to = to ? strdup(to) : nullptr;
+
+        const char *body_html = row.get<const char>(PR_BODY_HTML);
+        const char *body_plain = row.get<const char>(PR_BODY);
+
+        messages[i].body_html = body_html ? strdup(body_html) : nullptr;
+        messages[i].body_plain = (!body_html && body_plain) ? strdup(body_plain) : nullptr;
+
+        auto ts_ptr = row.get<const uint64_t>(PR_CLIENT_SUBMIT_TIME);
+        messages[i].timestamp = ts_ptr ? *ts_ptr : 0;
+
+    	const uint32_t* flags_ptr = static_cast<const uint32_t*>(row.getval(PR_MESSAGE_FLAGS));
+    	uint32_t flags = (flags_ptr != nullptr) ? *flags_ptr : 0;
+    	if (flags & MSGFLAG_UNSENT /* 0x8 */)
+    		messages[i].flags += MAIL_DRAFT;
+    	if (flags & MSGFLAG_READ /* 0x1 */)
+    		messages[i].flags += MAIL_SEEN;
+
+    	const auto flag_status = row.get<const uint32_t>(PR_FLAG_STATUS);
+    	if (flag_status != nullptr && *flag_status == followupFlagged /* 0x2 */)
+    		messages[i].flags += MAIL_FLAGGED;
+
+    	const auto *icon_index  = row.get<const uint32_t>(PR_ICON_INDEX);
+    	if (icon_index != nullptr && *icon_index == MAIL_ICON_REPLIED /* 0x105 */)
+    		messages[i].flags += MAIL_ANSWERED;
+    }
+
+    exmdb_client_remote::unload_table(eid, table_id);
+    return (int)tset.count;
 }
 
+
+}
