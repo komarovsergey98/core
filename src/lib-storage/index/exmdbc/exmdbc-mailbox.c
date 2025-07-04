@@ -205,27 +205,3 @@ bool exmdbc_mailbox_has_modseqs(struct exmdbc_mailbox *mbox)
 	return FALSE; //TODO: EXMDBC:
 }
 
-void exmdbc_mailbox_register_callbacks(struct exmdbc_mailbox *mbox)
-{
-	//Remove this in the end. We are not using imapc_client and not sending cmds anymore so we don't need untagged reply more
-	// fprintf(stdout, "!!! exmdbc_mailbox_register_callbacks called\n");
-	// exmdbc_mailbox_register_untagged(mbox, "EXISTS",
-	// 				exmdbc_untagged_exists);
-	// exmdbc_mailbox_register_untagged(mbox, "FETCH",
-	// 				exmdbc_untagged_fetch);
-	// exmdbc_mailbox_register_untagged(mbox, "EXPUNGE",
-	// 				exmdbc_untagged_expunge);
-	// exmdbc_mailbox_register_untagged(mbox, "SEARCH",
-	// 				exmdbc_untagged_search);
-	// exmdbc_mailbox_register_untagged(mbox, "ESEARCH",
-	// 				exmdbc_untagged_esearch);
-	// exmdbc_mailbox_register_resp_text(mbox, "UIDVALIDITY",
-	// 				 exmdbc_resp_text_uidvalidity);
-	// exmdbc_mailbox_register_resp_text(mbox, "UIDNEXT",
-	// 				 exmdbc_resp_text_uidnext);
-	// exmdbc_mailbox_register_resp_text(mbox, "HIGHESTMODSEQ",
-	// 				 exmdbc_resp_text_highestmodseq);
-	// exmdbc_mailbox_register_resp_text(mbox, "PERMANENTFLAGS",
-	// 				 exmdbc_resp_text_permanentflags);
-}
-

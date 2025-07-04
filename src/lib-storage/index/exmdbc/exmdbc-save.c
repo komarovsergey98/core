@@ -1,6 +1,7 @@
 /* Copyright (c) 2011-2018 Dovecot authors, see the included COPYING file */
 
 #include <exmdbc-mailbox.h>
+#include <exmdb_client_c.h>
 #include <stdio.h>
 #include <maildir/maildir-uidlist.h>
 
@@ -80,31 +81,40 @@ exmdbc_save_alloc(struct mailbox_transaction_context *t)
 	return t->save_ctx;
 }
 
+int create_temp_file(const char **path_r)
+{
+	static char template[] = "/tmp/exmdbc_msg_XXXXXX";
+	char *path = strdup(template); // Копія, яку можна модифікувати
+	if (!path) {
+		*path_r = NULL;
+		return -1;
+	}
+	int fd = mkstemp(path);
+	if (fd == -1) {
+		free(path);
+		*path_r = NULL;
+		return -1;
+	}
+	*path_r = path;
+	return fd;
+}
+
 int exmdbc_save_begin(struct mail_save_context *_ctx, struct istream *input)
 {
 	fprintf(stdout, "!!! exmdbc_save_begin called\n");
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
-	const char *path;
-
-	i_assert(ctx->fd == -1);
-
-	//TODO:EXMDBC:
-	//ctx->fd = exmdbc_client_create_temp_fd(ctx->mbox->storage->client->client,
-	//				      &path);
-	if (ctx->fd == -1) {
-		mail_set_critical(_ctx->dest_mail,
-				  "Couldn't create temp file %s", path);
+	int temp_fd = create_temp_file(&ctx->temp_path);
+	if (temp_fd == -1) {
+		mail_set_critical(_ctx->dest_mail, "Couldn't create temp file %s", ctx->temp_path);
 		ctx->failed = TRUE;
 		return -1;
 	}
-	/* we may not know the size of the input, or be sure that it contains
-	   only CRLFs. so we'll always first write the mail to a temp file and
-	   upload it from there to remote server. */
-	ctx->finished = FALSE;
-	ctx->temp_path = i_strdup(path);
-	ctx->input = i_stream_create_crlf(input);
+	ctx->fd = temp_fd;
+	ctx->temp_path = i_strdup(ctx->temp_path);
+	ctx->input = input;
 	_ctx->data.output = o_stream_create_fd_file(ctx->fd, 0, FALSE);
 	o_stream_cork(_ctx->data.output);
+	ctx->finished = FALSE;
 	return 0;
 }
 
@@ -205,32 +215,52 @@ int exmdbc_save_finish(struct mail_save_context *_ctx)
 {
 	fprintf(stdout, "!!! exmdbc_save_finish called\n");
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
-	struct mail_storage *storage = _ctx->transaction->box->storage;
+	struct exmdbc_mailbox *mbox = ctx->mbox;
+	struct exmdb_client *client = mbox->storage->client->client;
 
-	ctx->finished = TRUE;
-
-	if (!ctx->failed) {
-		if (o_stream_finish(_ctx->data.output) < 0) {
-			if (!mail_storage_set_error_from_errno(storage)) {
-				mail_set_critical(_ctx->dest_mail,
-					"write(%s) failed: %s", ctx->temp_path,
-					o_stream_get_error(_ctx->data.output));
-			}
-			ctx->failed = TRUE;
-		}
+	if (_ctx->data.output) {
+		o_stream_uncork(_ctx->data.output);
+		o_stream_flush(_ctx->data.output);
+		o_stream_unref(&_ctx->data.output);
 	}
 
-	if (!ctx->failed) {
-		if (exmdbc_save_append(ctx) < 0)
-			ctx->failed = TRUE;
+	FILE *f = fopen(ctx->temp_path, "rb");
+	if (!f) {
+		fprintf(stderr, "[EXMDBC] Can't open temp file %s\n", ctx->temp_path);
+		ctx->failed = TRUE;
+		return -1;
 	}
+	fseek(f, 0, SEEK_END);
+	size_t file_len = ftell(f);
+	rewind(f);
 
-	o_stream_unref(&_ctx->data.output);
-	i_stream_unref(&ctx->input);
-	i_close_fd_path(&ctx->fd, ctx->temp_path);
+	char *body = malloc(file_len);
+	if (!body) {
+		fclose(f);
+		fprintf(stderr, "[EXMDBC] Malloc failed\n");
+		ctx->failed = TRUE;
+		return -1;
+	}
+	if (fread(body, 1, file_len, f) != file_len) {
+		fclose(f);
+		free(body);
+		fprintf(stderr, "[EXMDBC] Read failed\n");
+		ctx->failed = TRUE;
+		return -1;
+	}
+	fclose(f);
+
+	int ret = exmdbc_client_save_body(
+		client,
+		mbox->folder_id,
+		mbox->box.list->ns->user->username,
+		body,
+		file_len
+	);
+	free(body);
+	unlink(ctx->temp_path);
 	i_free(ctx->temp_path);
-	index_save_context_free(_ctx);
-	return ctx->failed ? -1 : 0;
+	return ret;
 }
 
 void exmdbc_save_cancel(struct mail_save_context *_ctx)

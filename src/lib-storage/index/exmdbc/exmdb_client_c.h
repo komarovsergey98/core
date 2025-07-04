@@ -89,6 +89,10 @@ struct message_properties {
 
     int exmdbc_client_mark_message_read(struct exmdb_client *client, const char *username, uint64_t message_id, int mark_as_read, uint64_t *change_number_out);
 
+    int exmdbc_client_save_message( struct exmdb_client *client, uint64_t folder_id, const char *username, const struct message_properties *props);
+
+    int exmdbc_client_save_body( struct exmdb_client *client, uint64_t folder_id, const char *username, const void *body, size_t body_len);
+
 #ifdef __cplusplus
 }
 #endif
