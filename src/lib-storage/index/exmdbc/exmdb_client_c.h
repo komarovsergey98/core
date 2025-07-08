@@ -55,6 +55,8 @@ struct message_properties {
     uint32_t size;
 };
 
+struct exmdb_message_info;
+
 // C API
 
     //TODO: Put username inside of client. Continue refactoring of client
