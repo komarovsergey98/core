@@ -14,7 +14,8 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-ssl-iostream \
 	-I$(top_srcdir)/src/lib-var-expand \
 	-I$(top_srcdir)/../gromox/include \
-	-I$(srcdir)
+	-I$(srcdir) \
+	$(libHX_CFLAGS)
 
 AM_CXXFLAGS = -std=c++20
 
