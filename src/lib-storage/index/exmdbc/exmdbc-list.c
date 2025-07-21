@@ -47,8 +47,6 @@ int exmdbc_list_fill_mailbox_info(struct exmdbc_mailbox_list *list, struct exmdb
 							  lower_vname,
 							  POINTER_CAST(tmp_array[i].folder_id));
 			i_debug("exmdbc: adding folder: %s", tmp_array[i].name);
-		} else {
-			i_debug("exmdbc: skipping duplicate folder: %s", tmp_array[i].name);
 		}
 	}
 	list->folder_map_initialized = true;

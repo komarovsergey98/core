@@ -19,6 +19,7 @@ exmdbc_mail_alloc(struct mailbox_transaction_context *t,
 	pool_t pool = pool_alloconly_create("exmdbc_mail", 2048);
 
 	mail = p_new(pool, struct exmdbc_mail, 1);
+	mail->fd = -1;
 	index_mail_init(&mail->imail, t, wanted_fields, wanted_headers, pool, NULL);
 
 	return &mail->imail.mail.mail;
@@ -141,13 +142,13 @@ static int exmdbc_mail_get_physical_size(struct mail *_mail, uoff_t *size_r)
 	struct message_properties msg_props;
 	const char *username = mbox->box.list->ns->user->username;
 
-	if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, _mail->uid, username, &msg_props) < 0) {
+	if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, _mail->uid, username, &msg_props, MAIL_FETCH_PHYSICAL_SIZE) < 0) {
 		fprintf(stdout, "!!! exmdbc_mail_get_physical_size failed retrieve msg props\n");
 		return -1;
 	}
 
 	if (msg_props.body_plain) {
-		data->physical_size = strlen(msg_props.body_plain);
+		data->physical_size = msg_props.size;
 		*size_r = data->physical_size;
 		return 0;
 	}
@@ -361,13 +362,49 @@ exmdbc_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 		       const char **value_r)
 {
 	fprintf(stdout, "!!! exmdbc_mail_get_special called\n");
+
+	struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
+	struct index_mail *imail = &mail->imail;
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
-	struct index_mail *imail = INDEX_MAIL(_mail);
-	uint64_t num;
 
+	switch (field) {
+		case MAIL_FETCH_GUID:
+				if (imail->data.guid != NULL && *imail->data.guid)
+					*value_r = imail->data.guid;
+				else {
+					*value_r = t_strdup_printf("%llu", (unsigned long long)_mail->uid);
+				}
+		return 0;
 
-	//TODO:EXMDBC:
-	return -1;
+		case MAIL_FETCH_UIDL_BACKEND:
+				*value_r = t_strdup_printf("EXMDBC-%llu", (unsigned long long)_mail->uid);
+		return 0;
+
+		case MAIL_FETCH_IMAP_BODY:
+			if (imail->data.body == NULL) {
+				if (exmdbc_mail_fetch(_mail, MAIL_FETCH_IMAP_BODY, NULL) < 0)
+					return -1;
+			}
+		if (imail->data.body == NULL)
+			return -1;
+		*value_r = imail->data.body;
+		return 0;
+
+		case MAIL_FETCH_IMAP_BODYSTRUCTURE:
+			if (imail->data.bodystructure == NULL) {
+				if (exmdbc_mail_fetch(_mail, MAIL_FETCH_IMAP_BODYSTRUCTURE, NULL) < 0)
+					return -1;
+			}
+		if (imail->data.bodystructure == NULL)
+			return -1;
+		*value_r = imail->data.bodystructure;
+		return 0;
+
+		default:
+			break;
+	}
+
+	return index_mail_get_special(_mail, field, value_r);
 }
 
 static uint64_t exmdbc_mail_get_modseq(struct mail *_mail)

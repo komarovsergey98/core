@@ -7,6 +7,8 @@
 #include <gromox/paths.h>
 #include <gromox/util.hpp>
 #include <gromox/rop_util.hpp>
+#include <map>
+#include <sstream>
 
 enum mail_flags {
 	MAIL_ANSWERED	= 0x01,
@@ -47,6 +49,41 @@ enum mailbox_info_flags {
 	/* Internally used by lib-storage: */
 	MAILBOX_SELECT			= 0x20000000,
 	MAILBOX_MATCHED			= 0x40000000
+};
+
+enum exmdbc_fetch_field {
+	MAIL_FETCH_FLAGS		= 0x00000001,
+	MAIL_FETCH_MESSAGE_PARTS	= 0x00000002,
+
+	MAIL_FETCH_STREAM_HEADER	= 0x00000004,
+	MAIL_FETCH_STREAM_BODY		= 0x00000008,
+
+	MAIL_FETCH_DATE			= 0x00000010,
+	MAIL_FETCH_RECEIVED_DATE	= 0x00000020,
+	MAIL_FETCH_SAVE_DATE		= 0x00000040,
+	MAIL_FETCH_PHYSICAL_SIZE	= 0x00000080,
+	MAIL_FETCH_VIRTUAL_SIZE		= 0x00000100,
+
+	/* Set has_nuls / has_no_nuls fields */
+	MAIL_FETCH_NUL_STATE		= 0x00000200,
+
+	MAIL_FETCH_STREAM_BINARY	= 0x00000400,
+
+	/* specials: */
+	MAIL_FETCH_IMAP_BODY		= 0x00001000,
+	MAIL_FETCH_IMAP_BODYSTRUCTURE	= 0x00002000,
+	MAIL_FETCH_IMAP_ENVELOPE	= 0x00004000,
+	MAIL_FETCH_FROM_ENVELOPE	= 0x00008000,
+	MAIL_FETCH_HEADER_MD5		= 0x00010000,
+	MAIL_FETCH_STORAGE_ID		= 0x00020000,
+	MAIL_FETCH_UIDL_BACKEND		= 0x00040000,
+	MAIL_FETCH_MAILBOX_NAME		= 0x00080000,
+	MAIL_FETCH_SEARCH_RELEVANCY	= 0x00100000,
+	MAIL_FETCH_GUID			= 0x00200000,
+	MAIL_FETCH_POP3_ORDER		= 0x00400000,
+	MAIL_FETCH_REFCOUNT		= 0x00800000,
+	MAIL_FETCH_BODY_SNIPPET		= 0x01000000,
+	MAIL_FETCH_REFCOUNT_ID		= 0x02000000,
 };
 
 // FILETIME → time_t (Unix epoch)
@@ -329,6 +366,21 @@ void exmdb_client_set_dir(struct exmdb_client *client, const char *dir)
 	}
 }
 
+void set_body_html_from_props(const TPROPVAL_ARRAY *props, struct message_properties *msgs_props) {
+	const BINARY *html_bin = (const BINARY *)props->getval(PR_HTML);
+	if (html_bin && html_bin->cb > 0 && html_bin->pc) {
+		char *html_copy = (char *)malloc(html_bin->cb + 1);
+		if (html_copy) {
+			memcpy(html_copy, html_bin->pc, html_bin->cb);
+			html_copy[html_bin->cb] = '\0';
+			msgs_props->body_html = html_copy;
+		} else {
+			msgs_props->body_html = NULL;
+		}
+	} else {
+		msgs_props->body_html = NULL;
+	}
+}
 
 int exmdbc_read_message_metadata(uint64_t message_id, struct TPROPVAL_ARRAY *props, struct message_properties *msgs_props)
 {
@@ -346,8 +398,10 @@ int exmdbc_read_message_metadata(uint64_t message_id, struct TPROPVAL_ARRAY *pro
 
 	msgs_props->message_header = static_cast<const char *>(props->getval(PR_TRANSPORT_MESSAGE_HEADERS));
 
-	msgs_props->body_plain = static_cast<const char *>(props->getval( PR_BODY_A));
-	msgs_props->body_html  = static_cast<const char *>(props->getval( PR_BODY_HTML));
+	msgs_props->body_plain = static_cast<const char *>(props->getval( PR_BODY));
+
+	set_body_html_from_props(props, msgs_props);
+
 	if (msgs_props->body_plain != nullptr)
 		msgs_props->body_size = strlen(msgs_props->body_plain);
 
@@ -375,110 +429,156 @@ int exmdbc_read_message_metadata(uint64_t message_id, struct TPROPVAL_ARRAY *pro
 	if (icon_index != nullptr && *icon_index == MAIL_ICON_REPLIED /* 0x105 */)
 		msgs_props->flags += MAIL_ANSWERED;
 
-	//TODO:EMXDBC: Not found analogue. Need to investigate more
+	//TODO:EMXDBC: Not found analogue.
 	// if (icon_index != nullptr && *icon_index == MAIL_ICON_FORWARDED /* 0x106 */)
-	// 	msgs_props->flags += "\\Forwarded";
+	// 	msgs_props->flags += "$Forwarded";
 
 	// There is Deleted in IMAP\Dovecot but not in MAPI so i skipping it for reading and when writing i will need to delete it before saving. (Need to discuss with Jan)
-
-
 	return 0;
 }
 
-int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t folder_id, uint64_t message_id, const char *username, struct message_properties *msgs_props) {
-	if (!client || !username || !msgs_props) {
-		fprintf(stderr, "[EXMDB] Invalid arguments to get_message_properties\n");
-		return -1;
+int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t folder_id, uint64_t message_id, const char *username, struct message_properties *msgs_props, uint32_t fields)
+{
+    if (!client || !username || !msgs_props) {
+        fprintf(stderr, "[EXMDB] Invalid arguments to get_message_properties\n");
+        return -1;
+    }
+
+    STORE_ENTRYID store = {0, 0, 0, 0, {}, 0, deconst(""), deconst("")};
+    store.wrapped_provider_uid = g_muidStorePrivate;
+    store.pmailbox_dn = deconst(username);
+    store.pserver_name = deconst(username);
+
+    char *eid = nullptr;
+    unsigned int user_id = 0, domain_id = 0;
+    if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id)) {
+        fprintf(stderr, "[EXMDB] Failed to resolve store EID for %s\n", username);
+        return -1;
+    }
+
+    uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
+
+	std::vector<uint32_t> tags;
+	tags.push_back(PidTagMid);
+
+	// FLAGS
+	if (fields & MAIL_FETCH_FLAGS) {
+	    tags.push_back(PR_MESSAGE_FLAGS);
+	    tags.push_back(PR_FLAG_STATUS);
+	    tags.push_back(PR_ICON_INDEX);
 	}
 
-	STORE_ENTRYID store = {0, 0, 0, 0, {}, 0, deconst(""), deconst("")};
-	store.wrapped_provider_uid = g_muidStorePrivate;
-	store.pmailbox_dn = deconst(username);
-	store.pserver_name = deconst(username);
+	// SIZE
+	if (fields & MAIL_FETCH_PHYSICAL_SIZE) tags.push_back(PR_MESSAGE_SIZE);
+	if (fields & MAIL_FETCH_VIRTUAL_SIZE)  tags.push_back(PR_MESSAGE_SIZE);
 
-	char *eid = nullptr;
-	unsigned int user_id = 0, domain_id = 0;
-	if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id)) {
-		fprintf(stderr, "[EXMDB] Failed to resolve store EID for %s\n", username);
-		return -1;
+	// DATES
+	if (fields & MAIL_FETCH_DATE)          tags.push_back(PR_CLIENT_SUBMIT_TIME);
+	if (fields & MAIL_FETCH_RECEIVED_DATE) tags.push_back(PR_MESSAGE_DELIVERY_TIME);
+
+	// ENVELOPE
+	if (fields & MAIL_FETCH_IMAP_ENVELOPE) {
+	    tags.push_back(PR_SENDER_NAME);
+	    tags.push_back(PR_SENDER_EMAIL_ADDRESS);
+	    tags.push_back(PR_DISPLAY_TO);
+	    tags.push_back(PR_EMAIL_ADDRESS);
+	    tags.push_back(PR_DISPLAY_CC);
+	    tags.push_back(PR_DISPLAY_BCC);
+	    tags.push_back(PR_SUBJECT);
+	    tags.push_back(PR_REPLY_RECIPIENT_NAMES);
+	    tags.push_back(PR_IN_REPLY_TO_ID);
+	    tags.push_back(PR_INTERNET_MESSAGE_ID);
 	}
 
-
-	uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
-
-	uint32_t table_id = 0;
-	uint32_t row_count = 0;
-
-	if (!exmdb_client_remote::load_content_table(eid, CP_UTF8, eid_folder,
-			username, 0, nullptr, nullptr, &table_id, &row_count)) {
-		fprintf(stderr, "[EXMDBC] load_content_table failed for folder %" PRIu64 "\n", folder_id);
-		return -1;
-			}
-
-	static const uint32_t tags[] = {
-		PidTagMid,
-		PR_ENTRYID,
-		PR_SENDER_NAME,
-		PR_SENDER_EMAIL_ADDRESS,
-		PR_DISPLAY_TO,
-		PR_EMAIL_ADDRESS,
-		PR_DISPLAY_CC,
-		PR_DISPLAY_BCC,
-		PR_SUBJECT,
-		PR_REPLY_RECIPIENT_NAMES,
-		PR_IN_REPLY_TO_ID,
-		PR_INTERNET_MESSAGE_ID,
-		PR_TRANSPORT_MESSAGE_HEADERS,
-		PR_BODY,
-		PR_BODY_HTML,
-		PR_MESSAGE_SIZE,
-		PR_CLIENT_SUBMIT_TIME,
-		PR_MESSAGE_DELIVERY_TIME,
-		PR_MESSAGE_FLAGS,
-		PR_FLAG_STATUS,
-		PR_ICON_INDEX
-	};
-	PROPTAG_ARRAY tag_array = {
-		(uint16_t)(sizeof(tags) / sizeof(tags[0])),
-		deconst(tags)
-	};
-
-	if (false) {
-		TARRAY_SET tset{};
-		if (!exmdb_client_remote::query_table(eid, nullptr, CP_UTF8, table_id,
-											 &tag_array, 0, row_count, &tset)) {
-			fprintf(stderr, "[EXMDBC] query_table failed\n");
-			exmdb_client_remote::unload_table(eid, table_id);
-			return -1;
-											 }
-
-		for (unsigned int i = 0; i < tset.count; i++) {
-			auto &row = *tset.pparray[i];
-			const uint64_t mid	= row.get<const uint64_t>(PidTagMid) ? rop_util_get_gc_value(*row.get<const uint64_t>(PidTagMid)) : 0;
-			if (mid == message_id)
-			{
-
-				exmdbc_read_message_metadata(message_id, &row, msgs_props);
-				return 0;
-			}
-		}
-		return -1;
+	// BODYSTRUCTURE or BODY
+	if (fields & MAIL_FETCH_IMAP_BODYSTRUCTURE) {
+	    tags.push_back(PR_BODY);
+	    tags.push_back(PR_BODY_HTML);
 	}
-	else
+	if (fields & MAIL_FETCH_STREAM_BODY) {
+	    tags.push_back(PR_BODY);
+	    tags.push_back(PR_BODY_HTML);
+	}
+
+	// STREAM HEADER (RFC822)
+	if (fields & MAIL_FETCH_STREAM_HEADER) {
+	    tags.push_back(PR_SENDER_NAME);
+	    tags.push_back(PR_SENDER_EMAIL_ADDRESS);
+	    tags.push_back(PR_DISPLAY_TO);
+	    tags.push_back(PR_EMAIL_ADDRESS);
+	    tags.push_back(PR_DISPLAY_CC);
+	    tags.push_back(PR_DISPLAY_BCC);
+	    tags.push_back(PR_SUBJECT);
+	    tags.push_back(PR_IN_REPLY_TO_ID);
+	    tags.push_back(PR_INTERNET_MESSAGE_ID);
+	    tags.push_back(PR_CLIENT_SUBMIT_TIME);
+	    tags.push_back(PR_TRANSPORT_MESSAGE_HEADERS);
+	}
+
+	std::sort(tags.begin(), tags.end());
+	tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
+
+    PROPTAG_ARRAY tag_array = {
+        (uint16_t)tags.size(),
+        deconst(tags.data())
+    };
+
+	if (std::find(tags.begin(), tags.end(), PR_BODY) != tags.end() || std::find(tags.begin(), tags.end(),PR_BODY_HTML) != tags.end())
 	{
-		int ret = -1;
-		uint64_t eid_message = rop_util_make_eid_ex(1, message_id);
-		MESSAGE_CONTENT *content = nullptr;
-		BOOL ok = exmdb_client_remote::read_message(eid, username, CP_UTF8, eid_message, &content);
-		if (ok == TRUE && content != nullptr) {
-			exmdbc_read_message_metadata(message_id, content->get_proplist(), msgs_props);
-			ret	= 0;
-		}
+    	int ret = -1;
+    	uint64_t eid_message = rop_util_make_eid_ex(1, message_id);
+    	MESSAGE_CONTENT *content = nullptr;
+    	BOOL ok = exmdb_client_remote::read_message(eid, username, CP_UTF8, eid_message, &content);
+    	if (ok == TRUE && content != nullptr) {
+    		exmdbc_read_message_metadata(message_id, content->get_proplist(), msgs_props);
+    		ret	= 0;
+    	}
 
-		delete eid;
-		delete content;
-		return ret;
+    	delete eid;
+    	delete content;
+    	return ret;
 	}
+
+	int ret = 0;
+    uint32_t table_id = 0;
+    uint32_t row_count = 0;
+
+    if (!exmdb_client_remote::load_content_table(eid, CP_UTF8, eid_folder,
+			username, 0, nullptr, nullptr, &table_id, &row_count))
+    {
+    	fprintf(stderr, "[EXMDBC] load_content_table failed for folder %" PRIu64 "\n", folder_id);
+
+    	delete eid;
+    	return -1;
+	}
+
+    TARRAY_SET tset{};
+    if (!exmdb_client_remote::query_table(eid, nullptr, CP_UTF8, table_id,
+										 &tag_array, 0, row_count, &tset))
+    {
+    	fprintf(stderr, "[EXMDBC] query_table failed\n");
+    	exmdb_client_remote::unload_table(eid, table_id);
+
+    	delete eid;
+    	return -1;
+	}
+
+    if (ret >= 0) {
+    	for (unsigned int i = 0; i < tset.count; i++) {
+    		auto &row = *tset.pparray[i];
+    		const uint64_t mid	= row.get<const uint64_t>(PidTagMid) ? rop_util_get_gc_value(*row.get<const uint64_t>(PidTagMid)) : 0;
+    		if (mid == message_id)
+    		{
+
+    			exmdbc_read_message_metadata(message_id, &row, msgs_props);
+				delete eid;
+    			return 0;;
+    		}
+    	}
+    }
+
+    delete eid;
+    return -1;
 }
 
 int exmdbc_client_mark_message_read(struct exmdb_client *client, const char *username, uint64_t message_id, int mark_as_read, uint64_t *change_number_out)
@@ -550,7 +650,6 @@ int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t fold
         PR_SUBJECT,
         PR_SENDER_NAME,
         PR_DISPLAY_TO,
-        PR_BODY_HTML,
         PR_BODY,
         PR_CLIENT_SUBMIT_TIME
     };
@@ -584,12 +683,6 @@ int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t fold
     	const auto *icon_index  = row.get<const uint32_t>(PR_ICON_INDEX);
     	if (icon_index != nullptr && *icon_index == MAIL_ICON_REPLIED /* 0x105 */)
     		messages[i].flags += MAIL_ANSWERED;
-
-    	//TODO:EMXDBC: Not found analogue. Need to investigate more
-    	// if (icon_index != nullptr && *icon_index == MAIL_ICON_FORWARDED /* 0x106 */)
-    	// 	messages[i].flags += "\\Forwarded";
-
-    	// There is Deleted in IMAP\Dovecot but not in MAPI so i skipping it for reading and when writing i will need to delete it before saving. (Need to discuss with Jan)
     }
 
     exmdb_client_remote::unload_table(eid, table_id);
@@ -662,6 +755,14 @@ int exmdbc_client_save_message(
 
 	std::vector<TAGGED_PROPVAL> pv;
 
+
+	uint64_t cn = 0;
+	if (!exmdb_client_remote::allocate_cn(client->dir, &cn)) {
+		fprintf(stderr, "[EXMDBC] allocate_cn failed for user %" PRIu64 "\n", username);
+		return -1;
+	}
+	pv.push_back({PidTagChangeNumber, &cn});
+
     if (props->from_name)    pv.push_back({PR_SENDER_NAME, (void*)props->from_name});
     if (props->from_email)   pv.push_back({PR_SENDER_EMAIL_ADDRESS, (void*)props->from_email});
     if (props->to_name)      pv.push_back({PR_DISPLAY_TO, (void*)props->to_name});
@@ -675,11 +776,8 @@ int exmdbc_client_save_message(
     if (props->message_header) pv.push_back({PR_TRANSPORT_MESSAGE_HEADERS, (void*)props->message_header});
 
 
-    BINARY body_bin = {0, NULL};
     if (props->body_plain && props->body_size > 0) {
-        body_bin.cb = (uint32_t)props->body_size;
-        body_bin.pc = (char*)props->body_plain;
-        pv.push_back({ PR_BODY, &body_bin });
+		pv.push_back({PR_BODY, (void*)props->body_plain});
     }
     BINARY html_bin = {0, NULL};
     if (props->body_html && props->body_size > 0) {
@@ -707,12 +805,15 @@ int exmdbc_client_save_message(
     msg.proplist.count = tarr.count;
     msg.proplist.ppropval = tarr.ppropval;
 
+	ec_error_t e_result;
+
+	uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
     const BOOL ok = exmdb_client_remote::write_message(
         client->dir,
         CP_UTF8,
-        folder_id,
+        eid_folder,
         &msg,
-        nullptr
+        &e_result
     );
 
     if (ok == FALSE) {
@@ -722,13 +823,135 @@ int exmdbc_client_save_message(
     return 0;
 }
 
+static std::string extract_email_addr(const std::string& field)
+{
+    auto lt = field.find('<');
+    auto gt = field.find('>');
+    if (lt != std::string::npos && gt != std::string::npos && gt > lt)
+        return field.substr(lt+1, gt-lt-1);
+    return field;
+}
+
+static std::string extract_display_name(const std::string& field)
+{
+    auto lt = field.find('<');
+    if (lt != std::string::npos)
+        return field.substr(0, lt);
+    return field;
+}
+
+static time_t parse_rfc2822_date(const std::string& val)
+{
+	struct tm tm = {};
+	strptime(val.c_str(), "%a, %d %b %Y %H:%M:%S", &tm);
+	time_t t = mktime(&tm);
+	return t;
+}
+
+bool parse_email(const std::string& raw_email, message_properties& props)
+{
+    std::istringstream ss(raw_email);
+    std::string line;
+    std::map<std::string, std::string> headers;
+    std::string last_header;
+    size_t header_end_pos = 0;
+
+    // 1. Parse headers
+    while (std::getline(ss, line)) {
+        if (line.empty() || line == "\r") {
+            header_end_pos = ss.tellg();
+            break;
+        }
+        if (!last_header.empty() && (line[0] == ' ' || line[0] == '\t')) {
+            headers[last_header] += " " + line.substr(1);
+            continue;
+        }
+        auto colon = line.find(':');
+        if (colon != std::string::npos) {
+            std::string key = line.substr(0, colon);
+            std::string value = line.substr(colon + 1);
+            while (!value.empty() && (value[0] == ' ' || value[0] == '\t'))
+                value = value.substr(1);
+            headers[key] = value;
+            last_header = key;
+        }
+    }
+
+    static std::string s_from_name, s_from_email, s_to_name, s_to_email, s_cc, s_bcc, s_subj, s_msgid, s_reply_to;
+    if (headers.count("From")) {
+        s_from_email = extract_email_addr(headers["From"]);
+        s_from_name = extract_display_name(headers["From"]);
+        props.from_email = s_from_email.c_str();
+        props.from_name = s_from_name.c_str();
+    }
+    if (headers.count("To")) {
+        s_to_email = extract_email_addr(headers["To"]);
+        s_to_name = extract_display_name(headers["To"]);
+        props.to_email = s_to_email.c_str();
+        props.to_name = s_to_name.c_str();
+    }
+    if (headers.count("Cc")) {
+        s_cc = headers["Cc"];
+        props.cc = s_cc.c_str();
+    }
+    if (headers.count("Bcc")) {
+        s_bcc = headers["Bcc"];
+        props.bcc = s_bcc.c_str();
+    }
+    if (headers.count("Subject")) {
+        s_subj = headers["Subject"];
+        props.subject = s_subj.c_str();
+    }
+    if (headers.count("Message-ID")) {
+        s_msgid = headers["Message-ID"];
+        props.msg_id = s_msgid.c_str();
+    }
+    if (headers.count("Reply-To")) {
+        s_reply_to = headers["Reply-To"];
+        props.reply_to = s_reply_to.c_str();
+    }
+    // >>>>>>>>>> Дата через Gromox <<<<<<<<<<
+    if (headers.count("Date")) {
+        props.submited_time = parse_rfc2822_date(headers["Date"]);
+    }
+    // TODO: delivery_time (Received/Delivered-To)
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+    // Header blob
+    static std::string s_header_blob;
+    s_header_blob = raw_email.substr(0, header_end_pos);
+    props.message_header = s_header_blob.c_str();
+
+    // 3. Body (plain + html)
+    std::string body = raw_email.substr(header_end_pos);
+    size_t html_start = body.find("<html");
+    size_t plain_start = 0;
+    static std::string s_body_html, s_body_plain;
+    if (html_start != std::string::npos) {
+        s_body_html = body.substr(html_start);
+        props.body_html = s_body_html.c_str();
+        if (html_start > 0)
+            s_body_plain = body.substr(plain_start, html_start - plain_start);
+        else
+            s_body_plain = "";
+        props.body_plain = s_body_plain.c_str();
+        props.body_size = (uint32_t)s_body_plain.size();
+    } else {
+        s_body_plain = body;
+        props.body_plain = s_body_plain.c_str();
+        props.body_size = (uint32_t)s_body_plain.size();
+    }
+    return true;
+}
+
 int exmdbc_client_save_body(struct exmdb_client *client, uint64_t folder_id, const char *username, const void *body,
 	size_t body_len)
 {
 	struct message_properties props = {0};
-	props.body_plain = (const char*)body;
-	props.body_size = (uint32_t)body_len;
-
+	std::string raw_email((const char*)body, body_len);
+	if (!parse_email(raw_email, props)) {
+		return -1;
+	}
 	return exmdbc_client_save_message(client, folder_id, username, &props);
 }
 

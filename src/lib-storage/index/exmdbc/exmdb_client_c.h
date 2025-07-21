@@ -85,7 +85,7 @@ struct message_properties {
 
     int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t folder_id, struct message_properties *messages, unsigned int  max_count, const char *username, uint32_t first_uid);
 
-    int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t folder_id, uint64_t message_id, const char *username, struct message_properties *msgs_props);
+    int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t folder_id, uint64_t message_id, const char *username, struct message_properties *msgs_props, uint32_t fields);
 
     int exmdbc_client_mark_message_read(struct exmdb_client *client, const char *username, uint64_t message_id, int mark_as_read, uint64_t *change_number_out);
 

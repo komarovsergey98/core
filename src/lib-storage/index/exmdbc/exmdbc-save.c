@@ -102,6 +102,7 @@ int create_temp_file(const char **path_r)
 int exmdbc_save_begin(struct mail_save_context *_ctx, struct istream *input)
 {
 	fprintf(stdout, "!!! exmdbc_save_begin called\n");
+	sleep(20);
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	int temp_fd = create_temp_file(&ctx->temp_path);
 	if (temp_fd == -1) {
@@ -120,6 +121,7 @@ int exmdbc_save_begin(struct mail_save_context *_ctx, struct istream *input)
 
 int exmdbc_save_continue(struct mail_save_context *_ctx)
 {
+
 	fprintf(stdout, "!!! exmdbc_save_continue called\n");
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 

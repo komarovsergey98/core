@@ -89,6 +89,110 @@ static char *form_envelope(const char *from_name, const char *from_email,
 	return envelope;
 }
 
+
+static unsigned int count_lines(const char *s) {
+    unsigned int lines = 0;
+    if (!s) return 0;
+    for (; *s; ++s)
+        if (*s == '\n') ++lines;
+    return lines ? lines : 1; // мінімум одна лінія для порожнього
+}
+
+static char *form_bodystructure(const struct message_properties *msg_props)
+{
+    const char *charset_plain = "UTF-8";
+    const char *charset_html  = "UTF-8";
+    const char *boundary = "----=_exmdbc_boundary";
+    char *result;
+
+    size_t plain_len = msg_props->body_plain ? strlen(msg_props->body_plain) : 0;
+    unsigned int plain_lines = count_lines(msg_props->body_plain);
+
+    size_t html_len = msg_props->body_html ? strlen(msg_props->body_html) : 0;
+    unsigned int html_lines = count_lines(msg_props->body_html);
+
+    if (msg_props->body_plain && msg_props->body_html) {
+        // multipart/alternative: plain + html
+        char *plain_part = t_strdup_printf(
+            "(\"TEXT\" \"PLAIN\" (\"CHARSET\" \"%s\") NIL NIL \"7BIT\" %zu %u NIL NIL NIL NIL)",
+            charset_plain, plain_len, plain_lines
+        );
+        char *html_part = t_strdup_printf(
+            "(\"TEXT\" \"HTML\" (\"CHARSET\" \"%s\") NIL NIL \"7BIT\" %zu %u NIL NIL NIL NIL)",
+            charset_html, html_len, html_lines
+        );
+        result = t_strdup_printf(
+            "(%s %s \"ALTERNATIVE\" (\"BOUNDARY\" \"%s\") NIL NIL)",
+            plain_part, html_part, boundary
+        );
+    } else if (msg_props->body_plain) {
+        result = t_strdup_printf(
+            "(\"TEXT\" \"PLAIN\" (\"CHARSET\" \"%s\") NIL NIL \"7BIT\" %zu %u NIL NIL NIL NIL)",
+            charset_plain, plain_len, plain_lines
+        );
+    } else if (msg_props->body_html) {
+        result = t_strdup_printf(
+            "(\"TEXT\" \"HTML\" (\"CHARSET\" \"%s\") NIL NIL \"7BIT\" %zu %u NIL NIL NIL NIL)",
+            charset_html, html_len, html_lines
+        );
+    } else {
+        result = t_strdup("(\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 0 0 NIL NIL NIL NIL)");
+    }
+
+    return result;
+}
+
+static void format_address(char *buf, size_t buflen, const char *name, const char *email) {
+	if (name && *name) {
+		snprintf(buf, buflen, "\"%s\" <%s>", name, email ? email : "");
+	} else if (email) {
+		snprintf(buf, buflen, "<%s>", email);
+	} else {
+		buf[0] = '\0';
+	}
+}
+
+char *form_rfc822_header(const struct message_properties *msg)
+{
+	char from_buf[256], to_buf[256], cc_buf[256], bcc_buf[256];
+	char date_buf[128];
+
+	format_address(from_buf, sizeof(from_buf), msg->from_name, msg->from_email);
+	format_address(to_buf, sizeof(to_buf), msg->to_name, msg->to_email);
+	format_address(cc_buf, sizeof(cc_buf), NULL, msg->cc);
+	format_address(bcc_buf, sizeof(bcc_buf), NULL, msg->bcc);
+
+	rfc822_date_string(msg->submited_time, date_buf, sizeof(date_buf));
+
+	size_t len = 1024;
+	if (msg->message_header) len += strlen(msg->message_header);
+
+	char *header = malloc(len);
+	if (!header) return NULL;
+
+	snprintf(header, len,
+		"From: %s\r\n"
+		"To: %s\r\n"
+		"Subject: %s\r\n"
+		"Date: %s\r\n"
+		"Message-ID: %s\r\n"
+		"%s%s"  // CC/BCC,
+		"%s"    // In-Reply-To
+		"%s"    // Transport headers,
+		,
+		from_buf,
+		to_buf,
+		msg->subject ? msg->subject : "",
+		date_buf,
+		msg->msg_id ? msg->msg_id : "",
+		msg->cc && *msg->cc ? "Cc: " : "", msg->cc && *msg->cc ? msg->cc : "",
+		msg->reply_to && *msg->reply_to ? "\r\nIn-Reply-To: " : "",
+		msg->reply_to && *msg->reply_to ? msg->reply_to : "",
+		msg->message_header ? msg->message_header : ""//Fixme
+	);
+	return header;
+}
+
 static void
 exmdbc_fetch_stream(struct exmdbc_mail *mail, struct message_properties * msg_props)
 {
@@ -99,17 +203,17 @@ exmdbc_fetch_stream(struct exmdbc_mail *mail, struct message_properties * msg_pr
 	struct istream *hdr_stream = NULL;
 	struct istream *body_stream = NULL;
 
-	const char *value;
-	int fd;
 
 	if (imail->data.stream != NULL) {
 		index_mail_close_streams(imail);
 	}
 
+	char *rfc822_header = form_rfc822_header(msg_props);
 
-	if (msg_props->message_header != NULL) {
-		size_t header_len = strlen(msg_props->message_header);
-		hdr_stream = i_stream_create_from_data(msg_props->message_header, header_len);
+
+	if (rfc822_header != NULL) {
+		size_t header_len = strlen(rfc822_header);
+		hdr_stream = i_stream_create_from_data(rfc822_header, header_len);
 	}
 	if (msg_props->body_plain != NULL || msg_props->body_html != NULL) {
 		const char *body = msg_props->body_plain ? msg_props->body_plain : msg_props->body_html;
@@ -129,7 +233,21 @@ exmdbc_fetch_stream(struct exmdbc_mail *mail, struct message_properties * msg_pr
 		imail->data.stream = NULL;
 	}
 
-	mail->header_fetched = msg_props->message_header != NULL;
+	if (mail->body == NULL)
+		mail->body = buffer_create_dynamic(default_pool, 4096);
+	else
+		buffer_set_used_size(mail->body, 0);
+
+	if (rfc822_header)
+		buffer_append(mail->body, rfc822_header, strlen(rfc822_header));
+	// Fixme: Not sure if we need \r\n after each part
+	if (msg_props->body_plain)
+		buffer_append(mail->body, msg_props->body_plain, strlen(msg_props->body_plain));
+	else if (msg_props->body_html)
+		buffer_append(mail->body, msg_props->body_html, strlen(msg_props->body_html));
+
+
+	mail->header_fetched = rfc822_header != NULL;
 	mail->body_fetched = msg_props->body_plain != NULL || msg_props->body_html != NULL;
 	mail->imail.mail.mail.mail_stream_accessed = TRUE;
 
@@ -140,78 +258,62 @@ exmdbc_fetch_stream(struct exmdbc_mail *mail, struct message_properties * msg_pr
 
 static int exmdbc_mail_send_fetch(struct mail *_mail, enum mail_fetch_field fields, const char *const *headers)
 {
-    fprintf(stdout, "[EXMDBC] exmdbc_mail_send_fetch called (dummy)\n");
+    fprintf(stdout, "[EXMDBC] exmdbc_mail_send_fetch called\n");
 
     struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
     struct index_mail *imail = &mail->imail;
     struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
-	struct index_mail_data *data = &imail->data;
-
+    struct index_mail_data *data = &imail->data;
     uint32_t uid = _mail->uid;
-
     struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)mbox->box.list;
     const char *username = list->list.ns->user->username;
-    struct message_properties msg_props;
+    struct message_properties msg_props = {0};
 
-	if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, uid, username, &msg_props) != 0) {
-		fprintf(stderr, "[EXMDBC] exmdbc_mail_send_fetch error occured\n");
-		mail->fetch_failed = TRUE;
-		return -1;
-	}
+    if (fields != 0) {
+        if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, uid, username, &msg_props, fields) != 0) {
+            fprintf(stderr, "[EXMDBC] exmdbc_mail_send_fetch error occured\n");
+            mail->fetch_failed = TRUE;
+            return -1;
+        }
 
-	if (fields & MAIL_FETCH_FLAGS) {
-		//flags already converted
-		data->cache_flags = msg_props.flags;
-	}
+        if (fields & MAIL_FETCH_FLAGS) {
+            data->cache_flags = msg_props.flags;
+        }
+        if (fields & MAIL_FETCH_PHYSICAL_SIZE) {
+            data->physical_size = msg_props.size;
+        }
+        if (fields & MAIL_FETCH_VIRTUAL_SIZE) {
+            data->virtual_size = msg_props.size;
+        }
+        if (fields & MAIL_FETCH_DATE) {
+            data->date = msg_props.submited_time;
+        }
+        if (fields & MAIL_FETCH_RECEIVED_DATE) {
+            data->received_date = msg_props.delivery_time;
+        }
 
-//Size -------------------
-	if (fields & MAIL_FETCH_PHYSICAL_SIZE) {
-		data->physical_size = msg_props.size;
-	}
-	if (fields & MAIL_FETCH_VIRTUAL_SIZE) {
-		data->virtual_size = msg_props.size;//TODO:EXMDBC Fixme
-	}
+      	if (fields & MAIL_FETCH_IMAP_BODYSTRUCTURE ||
+      		fields & MAIL_FETCH_IMAP_BODY ||
+      		fields & MAIL_FETCH_STREAM_HEADER ||
+      		fields & MAIL_FETCH_STREAM_BODY)
+			exmdbc_fetch_stream(mail, &msg_props);
 
-//Dates----------------
-	if (fields & MAIL_FETCH_DATE) {
-		data->date = msg_props.submited_time;
-	}
-	if (fields & MAIL_FETCH_RECEIVED_DATE) {
-		data->received_date = msg_props.delivery_time;
-	}
-	// if (fields & MAIL_FETCH_SAVE_DATE) {
-		// data->save_date = msg_props.save_time;
-	// }
-//-----------------------
+        if (fields & MAIL_FETCH_IMAP_ENVELOPE) {
+            char *envelope = form_envelope(msg_props.from_name, msg_props.from_email, msg_props.to_name, msg_props.to_email, msg_props.subject, msg_props.submited_time, msg_props.msg_id, msg_props.reply_to);
+            data->envelope = envelope;
+        }
+        if (fields & MAIL_FETCH_IMAP_BODYSTRUCTURE) {
+            char *bodystructure = form_bodystructure(&msg_props);
+            data->bodystructure = bodystructure;
+            fprintf(stdout, "BODYSTRUCTURE: %s\n", bodystructure);
+        }
 
-	exmdbc_fetch_stream(mail, &msg_props);
-
-	if (fields & MAIL_FETCH_IMAP_ENVELOPE) {
-		char *envelope = form_envelope(msg_props.from_name, msg_props.from_email, msg_props.to_name, msg_props.to_email, msg_props.subject,	msg_props.submited_time, msg_props.msg_id, msg_props.reply_to);
-		data->envelope = envelope;
-	}
-
-	if (msg_props.from_name)
-		;
-	if (msg_props.to_name)
-		;
-	if (msg_props.cc)
-		;
-	if (msg_props.bcc)
-		;
-	if (msg_props.reply_recipment)
-		;
-	if (msg_props.reply_to)
-		;
-
-	fprintf(stdout, "[EXMDBC] fetched uid=%u subject='%s' flags=0x%x\n",
-			uid, msg_props.subject ? msg_props.subject : "(null)", msg_props.flags);
-
+        fprintf(stdout, "[EXMDBC] fetched uid=%u subject='%s' flags=0x%x\n",
+                uid, msg_props.subject ? msg_props.subject : "(null)", msg_props.flags);
+    }
     mail->fetching_fields |= fields;
-    // mail->fetch_count++;
     mail->fetch_sent = TRUE;
     mail->fetch_failed = FALSE;
-
     return 1;
 }
 
