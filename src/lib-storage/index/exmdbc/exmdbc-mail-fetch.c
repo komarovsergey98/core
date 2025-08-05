@@ -19,11 +19,11 @@ void exmdbc_mail_fetch_flush(struct exmdbc_mailbox *mbox)
 static char *imap_envelope_address(const char *name, const char *email)
 {
 	if (!email || !*email)
-		return strdup("NIL");
+		return t_strdup("NIL");
 
 	const char *at = strchr(email, '@');
 	if (!at)
-		return strdup("NIL");
+		return t_strdup("NIL");
 
 	size_t local_len = at - email;
 	char local[128], domain[128];
@@ -84,8 +84,8 @@ static char *form_envelope(const char *from_name, const char *from_email,
 		msgid_final   // message-id
 	);
 
-	free(from_addr);
-	free(to_addr);
+	// free(from_addr);
+	// free(to_addr);
 	return envelope;
 }
 
