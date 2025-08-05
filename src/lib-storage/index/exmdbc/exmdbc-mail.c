@@ -8,6 +8,7 @@
 #include "exmdbc-storage.h"
 #include "exmdbc-mailbox.h"
 #include <exmdb_client_c.h>
+#include <message-part-data.h>
 
 struct mail *
 exmdbc_mail_alloc(struct mailbox_transaction_context *t,
@@ -45,7 +46,6 @@ static bool exmdbc_mail_is_expunged(struct mail *_mail)
 	if (!exmdbc_msgmap_uid_to_rseq(msgmap, _mail->uid, &rseq))
 		return TRUE;
 
-	exmdbc_mailbox_noop(mbox);
 	if (!mbox->initial_sync_done) {
 		return FALSE;
 	}
@@ -147,7 +147,7 @@ static int exmdbc_mail_get_physical_size(struct mail *_mail, uoff_t *size_r)
 		return -1;
 	}
 
-	if (msg_props.body_plain) {
+	if (msg_props.size > 0) {
 		data->physical_size = msg_props.size;
 		*size_r = data->physical_size;
 		return 0;
@@ -173,11 +173,30 @@ static int exmdbc_mail_get_header_stream(struct mail *_mail,
 			     struct istream **stream_r)
 {
 	fprintf(stdout, "!!! exmdbc_mail_get_header_stream called\n");
+
 	struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
+	enum mail_lookup_abort old_abort = _mail->lookup_abort;
+	int ret;
 
-	//TODO:EXMDBC:
-	return -1;
+	// if (mail->imail.data.access_part != 0 ||
+	// 	EXMDBC_BOX_HAS_FEATURE(mbox, EXMDBC_FEATURE_NO_FETCH_HEADERS)) {
+	// 	/* we're going to be reading the header/body anyway */
+	// 	return index_mail_get_header_stream(_mail, headers, stream_r);
+	// 	}
+
+	/* see if the wanted headers are already in cache */
+	_mail->lookup_abort = MAIL_LOOKUP_ABORT_READ_MAIL;
+	ret = index_mail_get_header_stream(_mail, headers, stream_r);
+	_mail->lookup_abort = old_abort;
+	if (ret == 0)
+		return 0;
+
+	/* fetch only the wanted headers */
+	if (exmdbc_mail_fetch(_mail, 0, headers->name) < 0)
+		return -1;
+	/* the headers should cached now. */
+	return index_mail_get_header_stream(_mail, headers, stream_r);
 }
 
 static int
@@ -286,14 +305,47 @@ void exmdbc_mail_update_access_parts(struct index_mail *mail)
 {
 	fprintf(stdout, "!!! exmdbc_mail_update_access_parts called\n");
 	struct mail *_mail = &mail->mail.mail;
-	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct index_mail_data *data = &mail->data;
 	struct mailbox_header_lookup_ctx *header_ctx;
 	const char *str;
 	time_t date;
 	uoff_t size;
+	if ((data->wanted_fields & MAIL_FETCH_RECEIVED_DATE) != 0)
+		(void)index_mail_get_received_date(_mail, &date);
 
-	//TODO:EXMDBC:
+	if ((data->wanted_fields & MAIL_FETCH_SAVE_DATE) != 0) {
+		if (index_mail_get_save_date(_mail, &date) < 0) {
+			(void)index_mail_get_received_date(_mail, &date);
+			data->save_date = data->received_date;
+		}
+	}
+
+	if ((data->wanted_fields & (MAIL_FETCH_PHYSICAL_SIZE | MAIL_FETCH_VIRTUAL_SIZE)) != 0) {
+		if (index_mail_get_physical_size(_mail, &size) < 0)
+			data->access_part |= READ_HDR | READ_BODY;
+	}
+
+	if ((data->wanted_fields & MAIL_FETCH_IMAP_BODYSTRUCTURE) != 0)
+		(void)index_mail_get_cached_bodystructure(mail, &str);
+
+	if ((data->wanted_fields & MAIL_FETCH_IMAP_BODY) != 0)
+		(void)index_mail_get_cached_body(mail, &str);
+
+	if ((data->wanted_fields & MAIL_FETCH_IMAP_ENVELOPE) != 0)
+		data->access_part |= PARSE_HDR;
+
+	if (data->access_part == 0 && data->wanted_headers != NULL) {
+		if (!exmdbc_mail_has_headers_in_cache(mail, data->wanted_headers))
+			data->access_part |= PARSE_HDR;
+	}
+	if (data->access_part == 0 && (data->wanted_fields & MAIL_FETCH_IMAP_ENVELOPE) != 0) {
+		header_ctx = mailbox_header_lookup_init(_mail->box,
+							message_part_envelope_headers);
+		if (!exmdbc_mail_has_headers_in_cache(mail, header_ctx))
+			data->access_part |= PARSE_HDR;
+		mailbox_header_lookup_unref(&header_ctx);
+		}
+
 }
 
 static void exmdbc_mail_set_seq(struct mail *_mail, uint32_t seq, bool saving)
@@ -433,18 +485,6 @@ int exmdbcc_mail_fetch(struct mail *_mail, enum mail_fetch_field fields,
 {
 	fprintf(stdout, "!!! exmdbcc_mail_fetch called\n");
 	return -1;
-}
-
-void exmdbc_mailbox_noop(const struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_noop called\n");
-
-	if (mbox->client_box == NULL) {
-		/* mailbox opening hasn't finished yet */
-		return;
-	}
-
-	//TODO:EXMDBC:
 }
 
 struct mail_vfuncs exmdbc_mail_vfuncs = {

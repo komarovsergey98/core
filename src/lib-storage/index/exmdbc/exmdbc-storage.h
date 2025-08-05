@@ -76,7 +76,9 @@ struct exmdbc_mailbox {
 	struct exmdbc_client_mailbox *client_box;
 	uint64_t folder_id;
 
+	// struct mail_index_transaction *delayed_sync_trans;
 	struct mail_index_view *sync_view;
+	struct timeout *to_idle_check, *to_idle_delay;
 
 	enum mail_flags permanent_flags;
 	uint32_t highest_nonrecent_uid;

@@ -746,7 +746,8 @@ int exmdbc_client_save_message(
     struct exmdb_client *client,
     uint64_t folder_id,
     const char *username,
-    const struct message_properties *props)
+    const struct message_properties *props,
+    uint64_t *outmid)
 {
     if (!client || !username || !props) {
         fprintf(stderr, "[EXMDBC] Invalid args for save_message\n");
@@ -786,7 +787,28 @@ int exmdbc_client_save_message(
         pv.push_back({ PR_BODY_HTML, &html_bin });
     }
 
-    if (props->flags != 0u)        pv.push_back({PR_MESSAGE_FLAGS, (void*)&props->flags});
+    if (props->flags != 0u) {
+
+    	uint32_t mapi_flags = 0;
+    	if (props->flags & MAIL_SEEN)
+    		mapi_flags |= MSGFLAG_READ;
+    	if (props->flags & MAIL_DRAFT)
+    		mapi_flags |= MSGFLAG_UNSENT;
+
+    	pv.push_back({PR_MESSAGE_FLAGS, &mapi_flags});
+
+    	// Flagged (IMAP "Flagged" > MAPI "Flagged")
+    	if (props->flags & MAIL_FLAGGED) {
+    		static const uint32_t flagged = followupFlagged;
+    		pv.push_back({PR_FLAG_STATUS, (void*)&flagged});
+    	}
+
+    	// Answered (IMAP "Answered" > MAPI "Replied")
+    	if (props->flags & MAIL_ANSWERED) {
+    		static const uint32_t replied = MAIL_ICON_REPLIED;
+    		pv.push_back({PR_ICON_INDEX, (void*)&replied});
+    	}
+    }
     if (props->size)               pv.push_back({PR_MESSAGE_SIZE, (void*)&props->size});
     if (props->submited_time) {
         uint64_t ft = unix_time_to_filetime(props->submited_time);
@@ -808,11 +830,15 @@ int exmdbc_client_save_message(
 	ec_error_t e_result;
 
 	uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
-    const BOOL ok = exmdb_client_remote::write_message(
+
+	uint64_t outcn = 0;
+    const BOOL ok = exmdb_client_remote::write_message_v2(
         client->dir,
         CP_UTF8,
         eid_folder,
         &msg,
+        outmid,
+        &outcn,
         &e_result
     );
 
@@ -910,12 +936,10 @@ bool parse_email(const std::string& raw_email, message_properties& props)
         s_reply_to = headers["Reply-To"];
         props.reply_to = s_reply_to.c_str();
     }
-    // >>>>>>>>>> Дата через Gromox <<<<<<<<<<
     if (headers.count("Date")) {
         props.submited_time = parse_rfc2822_date(headers["Date"]);
     }
     // TODO: delivery_time (Received/Delivered-To)
-    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
     // Header blob
     static std::string s_header_blob;
@@ -941,20 +965,72 @@ bool parse_email(const std::string& raw_email, message_properties& props)
         props.body_plain = s_body_plain.c_str();
         props.body_size = (uint32_t)s_body_plain.size();
     }
+
+	props.size = (uint32_t)raw_email.size();
     return true;
 }
 
 int exmdbc_client_save_body(struct exmdb_client *client, uint64_t folder_id, const char *username, const void *body,
-	size_t body_len)
+size_t body_len, uint64_t *out_mid, uint32_t imap_flags)
 {
 	struct message_properties props = {0};
 	std::string raw_email((const char*)body, body_len);
 	if (!parse_email(raw_email, props)) {
 		return -1;
 	}
-	return exmdbc_client_save_message(client, folder_id, username, &props);
+
+	if (imap_flags != 0)
+		props.flags = imap_flags;
+
+	return exmdbc_client_save_message(client, folder_id, username, &props, out_mid);
+}
+
+int exmdbc_client_copy_message(struct exmdb_client *client, uint64_t src_message_id, uint64_t dst_folder_id,
+	const char *username)
+{
+	if (!client || !username) {
+		fprintf(stderr, "[EXMDB] Invalid arguments in copy_message\n");
+		return -1;
+	}
+
+	STORE_ENTRYID store = {0, 0, 0, 0, {}, 0, deconst(""), deconst("")};
+	store.wrapped_provider_uid = g_muidStorePrivate;
+	store.pmailbox_dn = deconst(username);
+	store.pserver_name = deconst(username);
+
+	char *eid = nullptr;
+	unsigned int user_id = 0, domain_id = 0;
+
+	if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id)) {
+		fprintf(stderr, "[EXMDB] store_eid_to_user failed in copy_message for user: %s\n", username);
+		return -1;
+	}
+
+	uint64_t dst_fid = rop_util_make_eid_ex(1, dst_folder_id);
+	uint64_t dst_id = 0;
+	BOOL b_move = FALSE;
+	BOOL pb_result = FALSE;
+
+	BOOL ok = exmdb_client_remote::movecopy_message(
+		eid,
+		CP_UTF8,
+		src_message_id, //MID
+		dst_fid,
+		dst_id,
+		b_move, //COPY
+		&pb_result
+	);
+
+	if (!ok || !pb_result) {
+		fprintf(stderr, "[EXMDB] movecopy_message RPC failed (ok=%d, pb_result=%d)\n", ok, pb_result);
+		delete eid;
+		return -1;
+	}
+
+	delete eid;
+	return 0;
 }
 
 
-}
 
+}

@@ -255,6 +255,21 @@ exmdbc_fetch_stream(struct exmdbc_mail *mail, struct message_properties * msg_pr
 
 }
 
+static bool
+headers_have_subset(const char *const *superset, const char *const *subset)
+{
+	unsigned int i;
+
+	if (superset == NULL)
+		return FALSE;
+	if (subset != NULL) {
+		for (i = 0; subset[i] != NULL; i++) {
+			if (!str_array_icase_find(superset, subset[i]))
+				return FALSE;
+		}
+	}
+	return TRUE;
+}
 
 static int exmdbc_mail_send_fetch(struct mail *_mail, enum mail_fetch_field fields, const char *const *headers)
 {
@@ -263,11 +278,51 @@ static int exmdbc_mail_send_fetch(struct mail *_mail, enum mail_fetch_field fiel
     struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
     struct index_mail *imail = &mail->imail;
     struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
+	struct mail_index_view *view;
     struct index_mail_data *data = &imail->data;
     uint32_t uid = _mail->uid;
+	uint32_t seq;
     struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)mbox->box.list;
     const char *username = list->list.ns->user->username;
     struct message_properties msg_props = {0};
+
+
+	if (!mbox->selected) {
+		mail_storage_set_error(_mail->box->storage,
+				MAIL_ERROR_NOTPOSSIBLE, "Can't fetch mails before selecting mailbox");
+		return -1;
+	}
+
+	if (!mail_stream_access_start(_mail))
+		return -1;
+
+	/* drop any fields that we may already be fetching currently */
+	fields &= ENUM_NEGATE(mail->fetching_fields);
+	if (headers_have_subset(mail->fetching_headers, headers))
+		headers = NULL;
+	if (fields == 0 && headers == NULL)
+		return mail->fetch_sent ? 0 : 1;
+
+	if (!_mail->saving) {
+		/* if we already know that the mail is expunged,
+		   don't try to FETCH it */
+		view = mbox->sync_view != NULL ?
+			mbox->sync_view : mbox->box.view;
+		if (!mail_index_lookup_seq(view, _mail->uid, &seq) ||
+			mail_index_is_expunged(view, seq)) {
+			mail_set_expunged(_mail);
+			return -1;
+			}
+	} else if (mbox->client_box == NULL) {
+		/* opened as save-only. we'll need to fetch the mail,
+		   so actually SELECT/EXAMINE the mailbox */
+		i_assert(mbox->box.opened);
+
+		if (exmdbc_mailbox_select(mbox) < 0)
+			return -1;
+	}
+
+
 
     if (fields != 0) {
         if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, uid, username, &msg_props, fields) != 0) {

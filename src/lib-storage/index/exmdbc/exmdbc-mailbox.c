@@ -205,3 +205,21 @@ bool exmdbc_mailbox_has_modseqs(struct exmdbc_mailbox *mbox)
 	return FALSE; //TODO: EXMDBC:
 }
 
+void exmdbc_sync_uid_validity(struct exmdbc_mailbox *mbox)
+{
+	struct mail_index_view *view = mbox->box.view;
+	struct mail_index_transaction *trans = mail_index_transaction_begin(view, 0);
+	const struct mail_index_header *hdr = mail_index_get_header(view);
+
+	if (hdr->uid_validity != mbox->sync_uid_validity && mbox->sync_uid_validity != 0) {
+		if (hdr->uid_validity != 0) {
+			mail_index_reset(trans);
+		}
+		mail_index_update_header(trans,
+			offsetof(struct mail_index_header, uid_validity),
+			&mbox->sync_uid_validity,
+			sizeof(mbox->sync_uid_validity), TRUE);
+	}
+
+	mail_index_transaction_commit(&trans);
+}

@@ -20,6 +20,7 @@ struct exmdbc_save_context {
 	pool_t pool;
 
 	struct exmdbc_mailbox *mbox;
+	struct exmdbc_mailbox *src_mbox;
 	struct mail_index_transaction *trans;
 
 	int fd;
@@ -27,6 +28,7 @@ struct exmdbc_save_context {
 	struct istream *input;
 
 	uint32_t dest_uid_validity;
+	ARRAY_TYPE(seq_range) dest_saved_uids;
 	unsigned int save_count;
 
 	bool failed:1;
@@ -43,17 +45,14 @@ struct exmdbc_save_cmd_context {
 
 void exmdbc_transaction_save_rollback(struct mail_save_context *_ctx)
 {
-
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 
-	i_assert(_ctx->data.output == NULL);
-
-	if (!ctx->finished)
-		exmdbc_save_cancel(&ctx->ctx);
-
-	//TODO:EXMDBC Save rollback
-
-	pool_unref(&ctx->pool);
+	if (ctx->finished || ctx->failed) {
+		i_assert(ctx->src_mbox != NULL);
+		ctx->finished = FALSE;
+		array_free(&ctx->dest_saved_uids);
+		i_free(ctx);
+	}
 }
 
 struct mail_save_context *
@@ -102,7 +101,6 @@ int create_temp_file(const char **path_r)
 int exmdbc_save_begin(struct mail_save_context *_ctx, struct istream *input)
 {
 	fprintf(stdout, "!!! exmdbc_save_begin called\n");
-	sleep(20);
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	int temp_fd = create_temp_file(&ctx->temp_path);
 	if (temp_fd == -1) {
@@ -134,97 +132,11 @@ int exmdbc_save_continue(struct mail_save_context *_ctx)
 	}
 	return 0;
 }
-
-static void
-exmdbc_append_keywords(string_t *str, struct mail_keywords *kw)
+int exmdbc_save_append(struct exmdbc_save_context *ctx)
 {
-	fprintf(stdout, "!!! exmdbc_append_keywords called\n");
-	const ARRAY_TYPE(keywords) *kw_arr;
-	const char *kw_str;
-	unsigned int i;
-
-	kw_arr = mail_index_get_keywords(kw->index);
-	for (i = 0; i < kw->count; i++) {
-		kw_str = array_idx_elem(kw_arr, kw->idx[i]);
-		if (str_len(str) > 1)
-			str_append_c(str, ' ');
-		str_append(str, kw_str);
-	}
-}
-
-static int exmdbc_save_append(struct exmdbc_save_context *ctx)
-{
-	fprintf(stdout, "!!! exmdbc_save_append called\n");
 	struct mail_save_context *_ctx = &ctx->ctx;
-	struct mail_save_data *mdata = &_ctx->data;
-	struct exmdbc_command *cmd;
-	struct exmdbc_save_cmd_context sctx;
-	struct istream *input;
-	const char *flags = "", *internaldate = "";
-
-	if (mdata->flags != 0 || mdata->keywords != NULL) {
-		string_t *str = t_str_new(64);
-
-		str_append(str, " (");
-
-	//TODO:EXMDBC:
-	//imap_write_flags(str, mdata->flags & ENUM_NEGATE(MAIL_RECENT), NULL);
-		if (mdata->keywords != NULL)
-			exmdbc_append_keywords(str, mdata->keywords);
-		str_append_c(str, ')');
-		flags = str_c(str);
-	}
-	if (mdata->received_date != (time_t)-1) {
-
-		//TODO:EXMDBC:
-		// internaldate = t_strdup_printf(" \"%s\"",
-		// imap_to_datetime(mdata->received_date));
-	}
-
-	ctx->mbox->exists_received = FALSE;
-
-	input = i_stream_create_fd(ctx->fd, IO_BLOCK_SIZE);
-	sctx.ctx = ctx;
-	sctx.ret = -2;
-
-	//TODO:EXMDBC:
-	//cmd = exmdbc_client_cmd(ctx->mbox->storage->client->client, exmdbc_save_callback, &sctx);
-	//exmdbc_command_sendf(cmd, "APPEND %s%1s%1s %p",
-	//	exmdbc_mailbox_get_remote_name(ctx->mbox),
-	//	flags, internaldate, input);
-	i_stream_unref(&input);
-	while (sctx.ret == -2)
-		exmdbc_mailbox_run(ctx->mbox);
-
-	if (sctx.ret == 0 && ctx->mbox->selected &&
-	    !ctx->mbox->exists_received) {
-		/* e.g. Courier doesn't send EXISTS reply before the tagged
-		   APPEND reply. That isn't exactly required by the IMAP RFC,
-		   but it makes the behavior better. See if NOOP finds
-		   the mail. */
-		sctx.ret = -2;
-		/*cmd = exmdbc_client_cmd(ctx->mbox->storage->client->client,
-				       exmdbc_save_noop_callback, &sctx);
-		exmdbc_command_set_flags(cmd, EXMDBC_COMMAND_FLAG_RETRIABLE);
-		exmdbc_command_send(cmd, "NOOP");*/
-		while (sctx.ret == -2)
-			exmdbc_mailbox_run(ctx->mbox);
-	}
-	return sctx.ret;
-}
-
-int exmdbc_save_finish(struct mail_save_context *_ctx)
-{
-	fprintf(stdout, "!!! exmdbc_save_finish called\n");
-	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	struct exmdbc_mailbox *mbox = ctx->mbox;
 	struct exmdb_client *client = mbox->storage->client->client;
-
-	if (_ctx->data.output) {
-		o_stream_uncork(_ctx->data.output);
-		o_stream_flush(_ctx->data.output);
-		o_stream_unref(&_ctx->data.output);
-	}
 
 	FILE *f = fopen(ctx->temp_path, "rb");
 	if (!f) {
@@ -236,7 +148,7 @@ int exmdbc_save_finish(struct mail_save_context *_ctx)
 	size_t file_len = ftell(f);
 	rewind(f);
 
-	char *body = malloc(file_len);
+	char *body = malloc(file_len ? file_len : 1);
 	if (!body) {
 		fclose(f);
 		fprintf(stderr, "[EXMDBC] Malloc failed\n");
@@ -252,17 +164,63 @@ int exmdbc_save_finish(struct mail_save_context *_ctx)
 	}
 	fclose(f);
 
+	uint64_t outmid = 0;
 	int ret = exmdbc_client_save_body(
 		client,
 		mbox->folder_id,
 		mbox->box.list->ns->user->username,
 		body,
-		file_len
+		file_len,
+		&outmid,
+		MAIL_RECENT
 	);
+
+	if (ret == 0 && outmid > 0) {
+		uint32_t lseq = 0;
+		mail_index_append(ctx->trans, outmid, &lseq);
+		mail_index_update_flags(ctx->trans, lseq, MODIFY_REPLACE, _ctx->data.flags);
+
+		// keywords, internaldatу???
+
+		if (ctx->dest_uid_validity == 0)
+			ctx->dest_uid_validity = outmid;
+
+
+		if (!array_is_created(&ctx->dest_saved_uids))
+			i_array_init(&ctx->dest_saved_uids, 8);
+
+		seq_range_array_add_with_init(&ctx->dest_saved_uids,
+						  32, outmid);
+		mail_set_seq_saving(_ctx->dest_mail, lseq);
+
+	}
+
 	free(body);
-	unlink(ctx->temp_path);
-	i_free(ctx->temp_path);
 	return ret;
+}
+
+int exmdbc_save_finish(struct mail_save_context *_ctx)
+{
+	sleep(20);
+	fprintf(stdout, "!!! exmdbc_save_finish called\n");
+	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
+	ctx->finished = TRUE;
+
+	if (_ctx->data.output) {
+		o_stream_uncork(_ctx->data.output);
+		o_stream_flush(_ctx->data.output);
+		o_stream_unref(&_ctx->data.output);
+	}
+
+	exmdbc_save_append(ctx);
+
+	if (ctx->temp_path) {
+		unlink(ctx->temp_path);
+		i_close_fd_path(&ctx->fd, ctx->temp_path);
+		i_free(ctx->temp_path);
+	}
+	index_save_context_free(_ctx);
+	return ctx->failed ? -1 : 0;
 }
 
 void exmdbc_save_cancel(struct mail_save_context *_ctx)
@@ -278,10 +236,11 @@ void exmdbc_save_cancel(struct mail_save_context *_ctx)
 int exmdbc_transaction_save_commit_pre(struct mail_save_context *_ctx)
 {
 	fprintf(stdout, "!!! exmdbc_transaction_save_commit_pre called\n");
+
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	struct mail_transaction_commit_changes *changes =
 		_ctx->transaction->changes;
-	uint32_t i, last_seq;
+	uint32_t i, last_seq, uid_validity;
 
 	i_assert(ctx->finished || ctx->failed);
 
@@ -292,54 +251,70 @@ int exmdbc_transaction_save_commit_pre(struct mail_save_context *_ctx)
 	for (i = 0; i < ctx->save_count; i++)
 		mail_index_expunge(ctx->trans, last_seq - i);
 
+	uid_validity = ctx->dest_uid_validity;
+	if (!ctx->failed && array_is_created(&ctx->dest_saved_uids)) {
+		changes->uid_validity = uid_validity;
+		array_append_array(&changes->saved_uids, &ctx->dest_saved_uids);
 
-	//TODO:EXMDBC: Save commit pre
-	// ret = exmdbc_rpc_save_message(ctx);
-	// if (ret < 0) {
-	// 	exmdbc_rpc_rollback_message(ctx);
-	// 	return -1;
-	// }
-	// if (mail_index_transaction_commit(&_t->itrans) < 0) {
-	// //Do it if we gromox has rollback oportunity
-	// 	exmdbc_rpc_rollback_message(ctx);
-	// 	return -1;
-	// }
+		if (ctx->mbox->sync_uid_validity != uid_validity) {
+			ctx->mbox->sync_uid_validity = uid_validity;
+			exmdbc_mail_cache_free(&ctx->mbox->prev_mail_cache);
+			exmdbc_sync_uid_validity(ctx->mbox);
+		}
+	}
 	return 0;
 }
 
 void exmdbc_transaction_save_commit_post(struct mail_save_context *_ctx,
 struct mail_index_transaction_commit_result *result) {
-	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 
-	_ctx->transaction = NULL;
-	pool_unref(&ctx->pool);
+	exmdbc_transaction_save_rollback(_ctx);
+}
+
+static bool exmdbc_is_mail_expunged(struct exmdbc_save_context *ctx, uint32_t uid)
+{
+	if (ctx->trans == NULL)
+		return FALSE;
+
+	struct mail_index_view *view =
+		mail_index_transaction_get_view(ctx->trans);
+	uint32_t seq;
+	return mail_index_lookup_seq(view, uid, &seq);
 }
 
 int exmdbc_copy(struct mail_save_context *_ctx, struct mail *mail)
 {
 	fprintf(stdout, "!!! exmdbc_copy called\n");
+
+	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	struct mailbox_transaction_context *_t = _ctx->transaction;
-	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_t->box);
-	uint32_t rseq;
-	int ret;
 
 	i_assert((_t->flags & MAILBOX_TRANSACTION_FLAG_EXTERNAL) != 0);
 
-	//TODO: EXMDBC: Copy mail from mail->box(src) to current mbox
-	// ezr to do this in c++
-	// ret = exmdbc_rpc_copy_message(mail, dst_mbox);
-	// if (ret < 0) {
-	// 	// here i need to do rollback
-	// 	return -1;
-	// }
-	//
-	// // mail_index_append()
-	//
-	// if (mail_index_transaction_commit(&_t->itrans) < 0) {
-	// 	// if failed i need to remove new message from gromox
-	// 	exmdbc_rpc_delete_message(dst_mbox, /* new_uid_or_id */);
-	// 	return -1;
-	// }
+	ctx->src_mbox = EXMDBC_MAILBOX(mail->box);
+	if (!mail->expunged && exmdbc_is_mail_expunged(ctx, mail->uid))
+		mail_set_expunged(mail);
 
+	if (_t->box->storage == mail->box->storage) {
+		struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(mail->box);
+		struct exmdbc_mailbox *dst_mbox = EXMDBC_MAILBOX(_t->box);
+		uint64_t mid = mail->uid;
+		uint64_t dst_fid = dst_mbox->folder_id;
+		const char *username = _t->box->list->ns->user->username;
+
+		int ret = exmdbc_client_copy_message(
+			mbox->storage->client->client,
+			mid,                  // src_message_id
+			dst_fid,              // dst_folder_id
+			username
+		);
+		index_save_context_free(_ctx);
+		if (ret == 0)
+			return 0;
+
+		mail_storage_set_error(mail->box->storage, MAIL_ERROR_TEMP,
+			"Failed to copy message via Gromox RPC");
+		return -1;
+	}
 	return mail_storage_copy(_ctx, mail);
 }
