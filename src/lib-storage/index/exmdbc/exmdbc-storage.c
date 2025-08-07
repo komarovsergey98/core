@@ -410,7 +410,6 @@ void exmdbc_mailbox_run(struct exmdbc_mailbox *mbox)
 {
 	fprintf(stdout, "!!! exmdbc_mailbox_run called\n");
 	exmdbc_mail_fetch_flush(mbox);
-	exmdbc_mailbox_run_nofetch(mbox);
 }
 
 struct mailbox exmdbc_mailbox = {

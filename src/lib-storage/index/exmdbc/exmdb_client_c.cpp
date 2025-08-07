@@ -496,8 +496,12 @@ int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t f
 	    tags.push_back(PR_BODY_HTML);
 	}
 	if (fields & MAIL_FETCH_STREAM_BODY) {
-	    tags.push_back(PR_BODY);
-	    tags.push_back(PR_BODY_HTML);
+		tags.push_back(PR_BODY);
+		tags.push_back(PR_BODY_HTML);
+	}
+	if (fields & MAIL_FETCH_IMAP_BODY) {
+		tags.push_back(PR_BODY);
+		tags.push_back(PR_BODY_HTML);
 	}
 
 	// STREAM HEADER (RFC822)

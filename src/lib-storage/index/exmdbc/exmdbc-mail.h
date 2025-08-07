@@ -9,19 +9,13 @@ struct exmdbc_mailbox;
 
 struct exmdbc_mail {
 	struct index_mail imail;
-
-	enum mail_fetch_field fetching_fields;
 	const char *const *fetching_headers;
-	unsigned int fetch_count;
-	bool fetch_sent;
-	const char *last_fetch_reply;
 
 	int fd;
 	buffer_t *body;
 	bool header_fetched;
 	bool body_fetched;
 	bool header_list_fetched;
-	bool fetch_ignore_if_missing;
 	bool fetch_failed;
 };
 

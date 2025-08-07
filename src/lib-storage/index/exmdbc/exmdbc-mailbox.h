@@ -20,7 +20,6 @@
 
 
 void exmdbc_mailbox_run(struct exmdbc_mailbox *mbox);
-void exmdbc_mailbox_run_nofetch(struct exmdbc_mailbox *mbox);
 int exmdbc_mailbox_select(struct exmdbc_mailbox *mbox);
 void exmdbc_mailbox_select_finish(struct exmdbc_mailbox *mbox);
 bool exmdbc_mailbox_name_equals(struct exmdbc_mailbox *mbox, const char *remote_name);

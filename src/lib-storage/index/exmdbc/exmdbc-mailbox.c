@@ -189,16 +189,6 @@ bool exmdbc_mailbox_name_equals(struct exmdbc_mailbox *mbox,
 	return FALSE;
 }
 
-void exmdbc_mailbox_run_nofetch(struct exmdbc_mailbox *mbox)
-{
-	fprintf(stdout, "!!! exmdbc_mailbox_run_nofetch called\n");
-	do {
-		//TODO:EXMDBC
-		//exmdbc_client_run(mbox->storage->client->client);
-	} while (mbox->storage->reopen_count > 0 ||
-		 mbox->state_fetching_uid1);
-}
-
 bool exmdbc_mailbox_has_modseqs(struct exmdbc_mailbox *mbox)
 {
 	fprintf(stdout, "!!! exmdbc_mailbox_has_modseqs called\n");

@@ -44,6 +44,55 @@ static void rfc822_date_string(time_t ts, char *buf, size_t bufsize)
 	strftime(buf, bufsize, "%a, %d %b %Y %H:%M:%S +0000", &tm);
 }
 
+// MIME type: "TEXT" "PLAIN", encoding, charset, size, lines
+static char *form_body(const struct message_properties *msg_props)
+{
+	//plain
+    if (msg_props->body_plain && (!msg_props->body_html || !*msg_props->body_html)) {
+        int lines = 0;
+        const char *ptr = msg_props->body_plain;
+        while (*ptr) {
+            if (*ptr == '\n') ++lines;
+            ++ptr;
+        }
+        size_t size = strlen(msg_props->body_plain);
+        return t_strdup_printf(
+            "(\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" %zu %d)",
+            size, lines
+        );
+    }
+
+    //html
+    if (!msg_props->body_plain && msg_props->body_html && *msg_props->body_html) {
+        int lines = 0;
+        const char *ptr = msg_props->body_html;
+        while (*ptr) {
+            if (*ptr == '\n') ++lines;
+            ++ptr;
+        }
+        size_t size = strlen(msg_props->body_html);
+
+        return t_strdup_printf(
+            "(\"TEXT\" \"HTML\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" %zu %d)",
+            size, lines
+        );
+    }
+    //multipart/alternative
+    if (msg_props->body_plain && msg_props->body_html) {
+        char *body_plain = form_body(&(struct message_properties){
+            .body_plain = msg_props->body_plain
+        });
+        char *body_html = form_body(&(struct message_properties){
+            .body_html = msg_props->body_html
+        });
+        return t_strdup_printf(
+            "(%s %s \"ALTERNATIVE\" (\"BOUNDARY\" \"----=_exmdbc_boundary\") NIL NIL)",
+            body_plain, body_html
+        );
+    }
+    return t_strdup("(\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 0 0)");
+}
+
 static char *form_envelope(const char *from_name, const char *from_email,
 						   const char *to_name,   const char *to_email,
 						   const char *subject,
@@ -67,11 +116,11 @@ static char *form_envelope(const char *from_name, const char *from_email,
 	else
 		strcpy(subj_esc, "");
 
-	const char *msgid_final = (msgid && *msgid) ? msgid : "NIL";
-	const char *irt_final   = (in_reply_to && *in_reply_to) ? in_reply_to : "NIL";
+	const char *msgid_final = (msgid && *msgid) ? t_strdup_printf("\"%s\"", msgid) : "NIL";
+	const char *irt_final   = (in_reply_to && *in_reply_to) ? t_strdup_printf("\"%s\"", in_reply_to) : "NIL";
 
 	char *envelope = t_strdup_printf(
-		"(\"%s\" \"%s\" %s %s %s %s %s %s \"%s\" \"%s\")",
+		"(\"%s\" \"%s\" %s %s %s %s %s %s %s %s)",
 		date_str,
 		subj_esc,
 		from_addr,    // from
@@ -296,12 +345,10 @@ static int exmdbc_mail_send_fetch(struct mail *_mail, enum mail_fetch_field fiel
 	if (!mail_stream_access_start(_mail))
 		return -1;
 
-	/* drop any fields that we may already be fetching currently */
-	fields &= ENUM_NEGATE(mail->fetching_fields);
 	if (headers_have_subset(mail->fetching_headers, headers))
 		headers = NULL;
 	if (fields == 0 && headers == NULL)
-		return mail->fetch_sent ? 0 : 1;
+		return 1;
 
 	if (!_mail->saving) {
 		/* if we already know that the mail is expunged,
@@ -325,33 +372,37 @@ static int exmdbc_mail_send_fetch(struct mail *_mail, enum mail_fetch_field fiel
 
 
     if (fields != 0) {
-        if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, uid, username, &msg_props, fields) != 0) {
-            fprintf(stderr, "[EXMDBC] exmdbc_mail_send_fetch error occured\n");
-            mail->fetch_failed = TRUE;
-            return -1;
-        }
+	    if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, uid, username, &msg_props, fields) != 0) {
+	    	fprintf(stderr, "[EXMDBC] exmdbc_mail_send_fetch error occured\n");
+	    	mail->fetch_failed = TRUE;
+	    	return -1;
+	    }
 
-        if (fields & MAIL_FETCH_FLAGS) {
-            data->cache_flags = msg_props.flags;
-        }
-        if (fields & MAIL_FETCH_PHYSICAL_SIZE) {
-            data->physical_size = msg_props.size;
-        }
-        if (fields & MAIL_FETCH_VIRTUAL_SIZE) {
-            data->virtual_size = msg_props.size;
-        }
-        if (fields & MAIL_FETCH_DATE) {
-            data->date = msg_props.submited_time;
-        }
-        if (fields & MAIL_FETCH_RECEIVED_DATE) {
-            data->received_date = msg_props.delivery_time;
-        }
+    	if (fields & MAIL_FETCH_FLAGS) {
+    		data->cache_flags = msg_props.flags;
+    	}
+    	if (fields & MAIL_FETCH_PHYSICAL_SIZE) {
+    		data->physical_size = msg_props.size;
+    	}
+    	if (fields & MAIL_FETCH_VIRTUAL_SIZE) {
+    		data->virtual_size = msg_props.size;
+    	}
+    	if (fields & MAIL_FETCH_DATE) {
+    		data->date = msg_props.submited_time;
+    	}
+    	if (fields & MAIL_FETCH_RECEIVED_DATE) {
+    		data->received_date = msg_props.delivery_time;
+    	}
 
-      	if (fields & MAIL_FETCH_IMAP_BODYSTRUCTURE ||
-      		fields & MAIL_FETCH_IMAP_BODY ||
-      		fields & MAIL_FETCH_STREAM_HEADER ||
-      		fields & MAIL_FETCH_STREAM_BODY)
-			exmdbc_fetch_stream(mail, &msg_props);
+    	if (fields & MAIL_FETCH_IMAP_BODY) {
+    		data->body = msg_props.body_plain;
+		}
+
+    	if (fields & MAIL_FETCH_STREAM_HEADER ||
+			fields & MAIL_FETCH_STREAM_BODY)
+    	{
+    		exmdbc_fetch_stream(mail, &msg_props);
+	    }
 
         if (fields & MAIL_FETCH_IMAP_ENVELOPE) {
             char *envelope = form_envelope(msg_props.from_name, msg_props.from_email, msg_props.to_name, msg_props.to_email, msg_props.subject, msg_props.submited_time, msg_props.msg_id, msg_props.reply_to);
@@ -366,8 +417,6 @@ static int exmdbc_mail_send_fetch(struct mail *_mail, enum mail_fetch_field fiel
         fprintf(stdout, "[EXMDBC] fetched uid=%u subject='%s' flags=0x%x\n",
                 uid, msg_props.subject ? msg_props.subject : "(null)", msg_props.flags);
     }
-    mail->fetching_fields |= fields;
-    mail->fetch_sent = TRUE;
     mail->fetch_failed = FALSE;
     return 1;
 }
@@ -485,15 +534,6 @@ int exmdbc_mail_fetch(struct mail *_mail, enum mail_fetch_field fields, const ch
 
     if (ret < 0)
         return -1;
-
-    if (ret > 0)
-        exmdbc_mail_fetch_flush(mbox);
-
-    while (mail->fetch_count > 0 &&
-           (!exmdbc_mail_have_fields(mail, fields) || !mail->header_list_fetched)) {
-        // TODO: Actually process async events
-        exmdbc_mailbox_run_nofetch(mbox);
-    }
 
     if (mail->fetch_failed) {
         mail_storage_set_internal_error(&mbox->storage->storage);

@@ -56,9 +56,6 @@ static bool exmdbc_mail_is_expunged(struct mail *_mail)
 static int exmdbc_mail_failed(struct mail *mail, const char *field)
 {
 	fprintf(stdout, "!!! exmdbc_mail_failed called\n");
-	struct exmdbc_mail *imail = EXMDBC_MAIL(mail);
-	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(mail->box);
-	bool fix_broken_mail = FALSE;
 	//TODO:EXMDBC:
 	if (mail->expunged || exmdbc_mail_is_expunged(mail)) {
 		mail_set_expunged(mail);
@@ -66,24 +63,9 @@ static int exmdbc_mail_failed(struct mail *mail, const char *field)
 	//	/* we've already logged a disconnection error */
 	//	mail_storage_set_internal_error(mail->box->storage);
 	} else {
-		/* By default we'll assume that this is a critical failure,
-		   because we don't want to lose any data. We can be here
-		   either because it's a temporary failure on the server or
-		   it's a permanent failure. Unfortunately we can't know
-		   which case it is, so permanent failures need to be worked
-		   around by setting exmdbc_features=fetch-fix-broken-mails.
-
-		   One reason for permanent failures was that earlier Exchange
-		   versions failed to return any data for messages in Calendars
-		   mailbox. This seems to be fixed in newer versions.
-		   */
-		fix_broken_mail = imail->fetch_ignore_if_missing;
-		mail_set_critical(mail,
-			"exmdbc: Remote server didn't send %s%s (FETCH replied: %s)",
-			field, fix_broken_mail ? " - treating it as empty" : "",
-			imail->last_fetch_reply);
+		mail_set_critical(mail, "exmdbc: Error while fetching");
 	}
-	return fix_broken_mail ? 0 : -1;
+	return -1;
 }
 
 static int exmdbc_mail_get_received_date(struct mail *_mail, time_t *date_r)
@@ -381,12 +363,6 @@ static void exmdbc_mail_close(struct mail *_mail)
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct exmdbc_mail_cache *cache = &mbox->prev_mail_cache;
 
-	if (mail->fetch_count > 0) {
-		exmdbc_mail_fetch_flush(mbox);
-		while (mail->fetch_count > 0)
-			exmdbc_mailbox_run_nofetch(mbox);
-	}
-
 	index_mail_close(_mail);
 
 	mail->fetching_headers = NULL;
@@ -405,8 +381,6 @@ static void exmdbc_mail_close(struct mail *_mail)
 	buffer_free(&mail->body);
 	mail->header_fetched = FALSE;
 	mail->body_fetched = FALSE;
-
-	i_assert(mail->fetch_count == 0);
 }
 
 static int
