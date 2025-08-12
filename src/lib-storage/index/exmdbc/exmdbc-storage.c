@@ -15,7 +15,7 @@ extern struct mailbox exmdbc_mailbox;
 
 static struct mail_storage *exmdbc_storage_alloc(void)
 {
-	fprintf(stdout, "!!! exmdbc_storage_alloc called\n");
+	i_debug("[exmdbc] exmdbc_storage_alloc called\n");
 	pool_t pool = pool_alloconly_create("exmdbc storage", 2048);
 	struct exmdbc_storage *storage = p_new(pool, struct exmdbc_storage, 1);
 	storage->storage = exmdbc_storage;
@@ -26,18 +26,18 @@ static struct mail_storage *exmdbc_storage_alloc(void)
 
 struct exmdb_client *exmdbc_client_create()
 {
-	fprintf(stdout, "!!! exmdbc_client_create called\n");
+	i_debug("[exmdbc] exmdbc_client_create called\n");
 	struct exmdb_client *client = NULL;
 	if (exmdb_client_create(&client) != 0) {
 		return NULL;
 	}
-	fprintf(stdout, "!!! exmdbc_client_create finished\n");
+	i_debug("[exmdbc] exmdbc_client_create finished\n");
 	return client;
 }
 
 static void exmdbc_client_free(struct exmdb_client * client)
 {
-	fprintf(stdout, "!!! exmdbc_client_free called\n");
+	i_debug("[exmdbc] exmdbc_client_free called\n");
 	exmdb_client_free(&client);
 }
 
@@ -45,7 +45,7 @@ static int exmdbc_storage_create(struct mail_storage *_storage,
                                  const struct mail_namespace *ns,
                                  const char **error_r)
 {
-	fprintf(stdout, "!!! exmdbc_storage_create called\n");
+	i_debug("[exmdbc] exmdbc_storage_create called\n");
 	if (strcmp(ns->list->name, EXMDBC_STORAGE_NAME) != 0) {
 		i_warning("exmdbc: unexpected namespace name: %s", ns->list->name);
 	}
@@ -57,7 +57,7 @@ static int exmdbc_storage_create(struct mail_storage *_storage,
 
 	const char *mail_path = ns->list->mail_set->mail_path;
 	if (!mail_path) {
-		fprintf(stdout, "!!! exmdbc: no mail_path provided in config\n");
+		i_debug("[exmdbc] exmdbc: no mail_path provided in config\n");
 		*error_r = "exmdbc: no mail_path provided in config";
 		return -1;
 	}
@@ -76,7 +76,7 @@ static int exmdbc_storage_create(struct mail_storage *_storage,
 
 
 	if ((ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0) {
-		fprintf(stdout, "!!! exmdbc: ns->flags & NAMESPACE_FLAG_INBOX_USER != 0\n");
+		i_debug("[exmdbc] exmdbc: ns->flags & NAMESPACE_FLAG_INBOX_USER != 0\n");
 	}
 	if (storage->client == NULL) {
 		*error_r = "exmdbc_client_create() failed";
@@ -98,7 +98,7 @@ static int exmdbc_storage_create(struct mail_storage *_storage,
 
 static void exmdbc_storage_destroy(struct mail_storage *_storage)
 {
-	fprintf(stdout, "!!! exmdbc_storage_destroy called\n");
+	i_debug("[exmdbc] exmdbc_storage_destroy called\n");
 	struct exmdbc_storage *storage = (struct exmdbc_storage *)_storage;
 
 	if (storage->client != NULL) {
@@ -112,7 +112,7 @@ static void exmdbc_storage_destroy(struct mail_storage *_storage)
 static int exmdbc_storage_add_list(struct mail_storage *_storage,
 								   struct mailbox_list *list)
 {
-	fprintf(stdout, "!!! exmdbc_storage_destroy called\n");
+	i_debug("[exmdbc] exmdbc_storage_destroy called\n");
 	struct exmdbc_storage *_s = (struct exmdbc_storage *)_storage;
 	_s->client->_list = (struct exmdbc_mailbox_list *)list;
 	return 0;
@@ -142,7 +142,7 @@ struct mailbox *
 exmdbc_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 					 const char *vname, enum mailbox_flags flags)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_alloc called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_alloc called\n");
 	pool_t pool = pool_alloconly_create("exmdbc mailbox", 4096);
 	struct exmdbc_mailbox *mbox = p_new(pool, struct exmdbc_mailbox, 1);
 
@@ -202,7 +202,7 @@ exmdbc_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 }
 
 const char *exmdbc_mailbox_get_remote_name(const struct exmdbc_mailbox *mbox) {
-	fprintf(stdout, "!!! exmdbc_mailbox_get_remote_name called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_get_remote_name called\n");
 	return mbox->box.name;
 }
 
@@ -210,7 +210,7 @@ static int exmdbc_mailbox_exists(struct mailbox *box, bool auto_boxes, enum mail
 	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)box->list;
 	const char *name = box->name;
 
-	fprintf(stderr, "!!! exmdbc_mailbox_exists: checking mailbox '%s'\n", name);
+	i_debug("[exmdbc] exmdbc_mailbox_exists: checking mailbox '%s'\n", name);
 
 	if (auto_boxes && mailbox_is_autocreated(box)) {
 		*existence_r = MAILBOX_EXISTENCE_SELECT;
@@ -247,7 +247,7 @@ static int exmdbc_mailbox_exists(struct mailbox *box, bool auto_boxes, enum mail
 }
 
 int exmdbc_mailbox_select(struct exmdbc_mailbox *mbox) {
-	fprintf(stdout, "!!! exmdbc_mailbox_select called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_select called\n");
 
 
 	i_assert(mbox->client_box == NULL);
@@ -268,23 +268,15 @@ int exmdbc_mailbox_select(struct exmdbc_mailbox *mbox) {
 		return -1;
 
 	mbox->exists_count = folder_meta.num_messages;
-
-	mbox->selecting = FALSE;
-	if (mbox->exists_count == 0) {
-		mbox->sync_next_lseq = 1;
-	} else {
-		(void)exmdbc_mailbox_fetch_state(mbox, 1);
-	}
-	mbox->selecting = FALSE;
 	mbox->exists_received = TRUE;
-	// Replacing exmdbc_mailbox_open_callback() by manual calling fetch_state
 
 	exmdbc_mailbox_select_finish(mbox);
 	return 0;
 }
 
 static int exmdbc_mailbox_open(struct mailbox *box) {
-	fprintf(stdout, "!!! exmdbc_mailbox_open called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_open called\n");
+	// sleep(20);
 	struct exmdbc_storage *storage = EXMDBC_STORAGE(box->storage);
 	struct exmdbc_mailbox *mbox   = EXMDBC_MAILBOX(box);
 	i_info("exmdbc_mailbox_open(): called");
@@ -304,7 +296,7 @@ static int exmdbc_mailbox_open(struct mailbox *box) {
 					   "Cannot ping store");
 		return -1;
 	}
-	fprintf(stdout, "!!! exmdbc_mailbox_alloc ping_store complete\n");
+	i_debug("[exmdbc] exmdbc_mailbox_alloc ping_store complete\n");
 
 	if (exmdbc_mailbox_select(mbox) < 0) {
 		mailbox_close(box);
@@ -315,14 +307,14 @@ static int exmdbc_mailbox_open(struct mailbox *box) {
 }
 
 void exmdbc_mail_cache_free(struct exmdbc_mail_cache *cache) {
-	fprintf(stdout, "!!! exmdbc_mail_cache_free called\n");
+	i_debug("[exmdbc] exmdbc_mail_cache_free called\n");
 	// i_close_fd(&cache->fd);
 	buffer_free(&cache->buf);
 	cache->uid = 0;
 }
 
 static void exmdbc_mailbox_close(struct mailbox *box) {
-	fprintf(stdout, "!!! exmdbc_mailbox_close called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_close called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
 	exmdbc_mail_fetch_flush(mbox);
 
@@ -336,7 +328,7 @@ static void exmdbc_mailbox_close(struct mailbox *box) {
 
 static int
 exmdbc_mailbox_create(struct mailbox *box, const struct mailbox_update *update ATTR_UNUSED, bool directory) {
-	fprintf(stdout, "!!! exmdbc_mailbox_create called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_create called\n");
 
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
 	struct exmdbc_storage *storage = mbox->storage;
@@ -344,7 +336,7 @@ exmdbc_mailbox_create(struct mailbox *box, const struct mailbox_update *update A
 
 	if (!directory) {
 
-		fprintf(stdout, "!!! exmdbc_mailbox_create directory not exist\n");
+		i_debug("[exmdbc] exmdbc_mailbox_create directory not exist\n");
 		return -1;
 	}
 	char *fullpath = p_strdup_printf(box->pool,
@@ -358,7 +350,7 @@ exmdbc_mailbox_create(struct mailbox *box, const struct mailbox_update *update A
 					   "ping_store failed");
 		return -1;
 	}
-	fprintf(stdout, "!!! exmdbc_mailbox_alloc ping_store complete\n");
+	i_debug("[exmdbc] exmdbc_mailbox_alloc ping_store complete\n");
 
 
 	if (!exmdbc_client_create_folder_v1(storage->client->client,
@@ -375,7 +367,7 @@ exmdbc_mailbox_create(struct mailbox *box, const struct mailbox_update *update A
 }
 
 static int exmdbc_mailbox_update(struct mailbox *box, const struct mailbox_update *update) {
-	fprintf(stdout, "!!! exmdbc_mailbox_update called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_update called\n");
 	if (!guid_128_is_empty(update->mailbox_guid) ||
 		update->uid_validity != 0 || update->min_next_uid != 0 ||
 		update->min_first_recent_uid != 0) {
@@ -386,29 +378,29 @@ static int exmdbc_mailbox_update(struct mailbox *box, const struct mailbox_updat
 }
 
 static int exmdbc_mailbox_delete(struct mailbox *box) {
-	fprintf(stdout, "!!! exmdbc_mailbox_delete called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_delete called\n");
 	box->delete_skip_empty_check = TRUE;
 	return index_storage_mailbox_delete(box);
 }
 
 static int exmdbc_mailbox_get_metadata(struct mailbox *box, enum mailbox_metadata_items items, struct mailbox_metadata *metadata_r) {
-	fprintf(stdout, "!!! exmdbc_mailbox_get_metadata called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_get_metadata called\n");
 	return -1;
 }
 
 static void exmdbc_notify_changes(struct mailbox *box) {
-	fprintf(stdout, "!!! exmdbc_notify_changes called\n");
+	i_debug("[exmdbc] exmdbc_notify_changes called\n");
 
 }
 
 static bool exmdbc_is_inconsistent(struct mailbox *box) {
-	fprintf(stdout, "!!! exmdbc_is_inconsistent called\n");
+	i_debug("[exmdbc] exmdbc_is_inconsistent called\n");
 	return FALSE;
 }
 
 void exmdbc_mailbox_run(struct exmdbc_mailbox *mbox)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_run called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_run called\n");
 	exmdbc_mail_fetch_flush(mbox);
 }
 

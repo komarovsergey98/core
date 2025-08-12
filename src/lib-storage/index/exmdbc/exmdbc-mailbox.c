@@ -1,24 +1,19 @@
 #include "lib.h"
 #include "ioloop.h"
-#include "str.h"
 #include "mail-index-modseq.h"
 #include "exmdbc-mail.h"
-#include "exmdbc-msgmap.h"
 #include "exmdbc-list.h"
-#include "exmdbc-search.h"
 #include "exmdbc-sync.h"
 #include "exmdbc-storage.h"
 #include "exmdbc-mailbox.h"
 
-#include <exmdb_client_c.h>
 #include <stdio.h>
 
-#define NOTIFY_DELAY_MSECS 500
 
 void exmdbc_mailbox_set_corrupted(struct exmdbc_mailbox *mbox,
 				 const char *reason, ...)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_set_corrupted called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_set_corrupted called\n");
 	const char *errmsg;
 	va_list va;
 
@@ -43,7 +38,7 @@ void exmdbc_mailbox_set_corrupted(struct exmdbc_mailbox *mbox,
 struct mail_index_view *
 exmdbc_mailbox_get_sync_view(struct exmdbc_mailbox *mbox)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_get_sync_view called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_get_sync_view called\n");
 	if (mbox->sync_view == NULL)
 		mbox->sync_view = mail_index_view_open(mbox->box.index);
 	return mbox->sync_view;
@@ -51,66 +46,21 @@ exmdbc_mailbox_get_sync_view(struct exmdbc_mailbox *mbox)
 
 void exmdbc_mailbox_select_finish(struct exmdbc_mailbox *mbox)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_select_finish called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_select_finish called\n");
 	if (mbox->exists_count == 0) {
 		/* no mails. expunge everything. */
-		mbox->sync_next_lseq = 1;
 	} else {
 		/* We don't know the latest flags, refresh them. */
 		(void)exmdbc_mailbox_fetch_state(mbox, 1);
 	}
 	mbox->selected = TRUE;
-}
-
-bool
-exmdbc_client_fetch_message_states(struct exmdbc_mailbox *mbox, uint32_t first_uid)
-{
-	fprintf(stdout, "!!! exmdbc_client_fetch_message_states called\n");
-	unsigned int max_messages = 100;
-
-	const char *username = mbox->box.list->ns->user->username;
-
-	struct message_properties *messages = calloc(max_messages, sizeof(*messages));
-	if (!messages) {
-		fprintf(stderr, "Failed to allocate memory\n");
-		return 1;
-	}
-
-	int count = exmdbc_client_get_folder_messages(mbox->storage->client->client, mbox->folder_id, messages,
-		max_messages, username, first_uid);
-
-	if (count < 0) {
-		fprintf(stderr, "Failed to get folder messages\n");
-		free(messages);
-		return 1;
-	}
-
-	printf("Got %d messages from folder %" PRIu64 "\n", count, mbox->folder_id);
-	for (int i = 0; i < count; ++i) {
-		printf("Message %" PRIu64 ": Subject='%s', From='%s', To='%s', Timestamp=%" PRIu64 "\n",
-			messages[i].mid,
-			messages[i].subject ? messages[i].subject : "(null)",
-			messages[i].from_name ? messages[i].from_name : "(null)",
-			messages[i].to_name ? messages[i].to_name : "(null)",
-			messages[i].delivery_time);
-		// Пам'ятай звільняти strdup'ed рядки, якщо потрібно
-		free((void*)messages[i].subject);
-		free((void*)messages[i].from_name);
-		free((void*)messages[i].to_name);
-		free((void*)messages[i].body_plain);
-		free((void*)messages[i].body_html);
-	}
-
-	free(messages);
-	return 0;
-
+	mbox->selecting = FALSE;
 }
 
 bool
 exmdbc_mailbox_fetch_state(struct exmdbc_mailbox *mbox, uint32_t first_uid)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_fetch_state called\n");
-
+	i_debug("[exmdbc] exmdbc_mailbox_fetch_state called\n");
 
 	if (mbox->exists_count == 0) {
 		/* empty mailbox - no point in fetching anything.
@@ -130,51 +80,20 @@ exmdbc_mailbox_fetch_state(struct exmdbc_mailbox *mbox, uint32_t first_uid)
 	// 	mail_index_modseq_enable(mbox->box.index);
 	// }
 
-	//TODO:EXMDBC: ask jan for GMAIL features support
-	// if (IMAPC_BOX_HAS_FEATURE(mbox, IMAPC_FEATURE_GMAIL_MIGRATION)) {
-	// 	enum mailbox_info_flags flags;
-	//
-	// 	if (!mail_index_is_in_memory(mbox->box.index)) {
-	// 		/* these can be efficiently fetched among flags and
-	// 		   stored into cache */
-	// 		str_append(str, " X-GM-MSGID");
-	// 	}
-	// 	/* do this only for the \All mailbox */
-	// 	if (imapc_list_get_mailbox_flags(mbox->box.list,
-	// 					 mbox->box.name, &flags) == 0 &&
-	// 		(flags & MAILBOX_SPECIALUSE_ALL) != 0)
-	// 		str_append(str, " X-GM-LABELS");
-	//
-	// }
-
-	if (first_uid == 1) {
-		mbox->sync_next_lseq = 1;
-		mbox->sync_next_rseq = 1;
-		mbox->state_fetched_success = FALSE;
-	}
 	mbox->state_fetching_uid1 = first_uid == 1;
 
-	//TODO:EXMDBC do fetch from GromoxRPC
-	// exmdbc_client_fetch_message_states(mbox, first_uid);
-	exmdbc_mailbox_sync(mbox);
+	// if (index_mailbox_want_full_sync(&mbox->box, MAILBOX_SYNC_FLAG_FORCE_RESYNC))
+		exmdbc_mailbox_sync(mbox);
+
 
 	mbox->state_fetching_uid1 = FALSE;
 	return TRUE;
 }
 
-static bool keywords_are_equal(struct mail_keywords *kw,
-			       const ARRAY_TYPE(keyword_indexes) *kw_arr)
-{
-
-	fprintf(stdout, "!!! keywords_are_equal called\n");
-
-	return FALSE;
-}
-
 bool exmdbc_mailbox_name_equals(struct exmdbc_mailbox *mbox,
 			       const char *remote_name)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_name_equals called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_name_equals called\n");
 	const char *exmdbc_remote_name =
 		exmdbc_mailbox_get_remote_name(mbox);
 
@@ -191,7 +110,7 @@ bool exmdbc_mailbox_name_equals(struct exmdbc_mailbox *mbox,
 
 bool exmdbc_mailbox_has_modseqs(struct exmdbc_mailbox *mbox)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_has_modseqs called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_has_modseqs called\n");
 	return FALSE; //TODO: EXMDBC:
 }
 

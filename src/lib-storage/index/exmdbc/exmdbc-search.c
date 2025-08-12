@@ -6,6 +6,7 @@
 #include "exmdbc-storage.h"
 #include "exmdbc-search.h"
 
+#include <exmdb_client_c.h>
 #include <stdio.h>
 
 #include "exmdbc-mailbox.h"
@@ -15,27 +16,151 @@
 
 struct exmdbc_search_context {
 	union mail_search_module_context module_ctx;
-
-	ARRAY_TYPE(seq_range) rseqs;
-	struct seq_range_iter iter;
-	unsigned int n;
+	uint32_t *uids;
+	unsigned count;
+	unsigned pos;
 	bool finished;
-	bool success;
 };
 
 static MODULE_CONTEXT_DEFINE_INIT(exmdbc_storage_module,
 				  &mail_storage_module_register);
 
-static bool exmdbc_build_search_query(struct exmdbc_mailbox *mbox,
-				     const struct mail_search_args *args,
-				     const char **query_r)
+static bool exmdbc_extract_single_uid_range(struct exmdbc_mailbox *mbox,
+		const struct mail_search_arg *arg,
+		uint32_t *lo_r, uint32_t *hi_r)
 {
-	fprintf(stdout, "!!! exmdbc_build_search_query called\n");
-	string_t *str = t_str_new(128);
+	ARRAY_TYPE(seq_range) uids;
+	t_array_init(&uids, 8);
 
-	//TODO:EXMDBC:
-	*query_r = str_c(str);
+	if (arg->type == SEARCH_SEQSET) {
+		/* convert message sequences -> UIDs */
+		mailbox_get_uid_range(&mbox->box, &arg->value.seqset, &uids);
+	} else if (arg->type == SEARCH_UIDSET) {
+		/* copy the UID ranges as elements into our local array */
+		const struct seq_range *in_ranges;
+		unsigned int in_count = 0;
+		in_ranges = array_get(&arg->value.seqset, &in_count);
+		if (in_count == 0)
+			return FALSE;
+		array_append(&uids, in_ranges, in_count);
+	} else {
+		return FALSE;
+	}
+
+	if (array_count(&uids) != 1)
+		return FALSE; /* MVP: support only one contiguous range for server offload */
+
+	const struct seq_range *r = array_front(&uids);
+	uint32_t lo = r->seq1 ? r->seq1 : 1;
+	uint32_t hi = r->seq2 ? r->seq2 : lo;
+
+	*lo_r = lo;
+	*hi_r = hi;
 	return TRUE;
+}
+
+static bool exmdbc_build_spec_from_args(struct exmdbc_mailbox *mbox,
+                                        const struct mail_search_arg *args,
+                                        struct exmdbc_search_spec *spec)
+{
+    i_zero(spec);
+    bool have_uid = FALSE;
+
+    for (const struct mail_search_arg *a = args; a != NULL; a = a->next) {
+        if (a->match_not)
+            return FALSE; /* TODO:EXMDBC: could support later */
+
+        switch (a->type) {
+        case SEARCH_ALL:
+            break;
+
+        case SEARCH_OR:
+        case SEARCH_SUB:
+            return FALSE; /* TODO: OR/() */
+
+        case SEARCH_SEQSET:
+		case SEARCH_UIDSET: {
+        		uint32_t lo, hi;
+        		if (!exmdbc_extract_single_uid_range(mbox, a, &lo, &hi))
+        			return FALSE;
+        		if (have_uid) /* already had a range -> not supported in MVP */
+        			return FALSE;
+        		spec->uid_lo = lo;
+        		spec->uid_hi = hi;
+        		have_uid = TRUE;
+        		break;
+		}
+
+	    case SEARCH_FLAGS: {
+	        /* In this Dovecot build value.flags is a single enum mail_flags.
+			   We only optimize \Seen; anything else → fallback. */
+	        enum mail_flags f = a->value.flags;
+
+	        if (f == MAIL_SEEN) {
+        		if (a->match_not)
+        			spec->want_unseen = 1; /* UNSEEN */
+        		else
+        			spec->want_seen = 1;   /* SEEN */
+	        } else {
+        		/* Other system flags (\Answered, \Deleted, …) → fallback for now */
+        		return FALSE;
+	        }
+	        break;
+        }
+
+        case SEARCH_SINCE:
+            if (a->value.time != 0 && (spec->since_utc == 0 || a->value.time < (time_t)spec->since_utc))
+                spec->since_utc = (uint64_t)a->value.time;
+            break;
+        case SEARCH_BEFORE:
+            if (a->value.time != 0 && (spec->before_utc == 0 || a->value.time < (time_t)spec->before_utc))
+                spec->before_utc = (uint64_t)a->value.time;
+            break;
+        case SEARCH_ON:
+            if (a->value.time != 0) {
+                spec->since_utc  = (uint64_t)a->value.time;
+                spec->before_utc = (uint64_t)a->value.time + 24*60*60;
+            }
+            break;
+
+        case SEARCH_SMALLER:
+            spec->smaller_than = a->value.size;
+            break;
+        case SEARCH_LARGER:
+            spec->larger_than = a->value.size;
+            break;
+
+        case SEARCH_HEADER:
+        case SEARCH_HEADER_ADDRESS:
+        case SEARCH_HEADER_COMPRESS_LWSP: {
+            const char *h = a->hdr_field_name, *v = a->value.str;
+            if (v == NULL || *v == '\0') break;
+            if (strcasecmp(h, "Subject") == 0) spec->subject = v;
+            else if (strcasecmp(h, "From") == 0) spec->from_ = v;
+            else if (strcasecmp(h, "To") == 0)   spec->to_   = v;
+            else if (strcasecmp(h, "Cc") == 0)   spec->cc    = v;
+            else return FALSE;
+            break;
+        }
+
+        case SEARCH_BODY:
+        case SEARCH_TEXT:
+        case SEARCH_MODSEQ:
+        case SEARCH_KEYWORDS:
+        case SEARCH_MAILBOX:
+        case SEARCH_MAILBOX_GUID:
+        case SEARCH_MAILBOX_GLOB:
+        case SEARCH_REAL_UID:
+        case SEARCH_INTHREAD:
+        case SEARCH_GUID:
+        case SEARCH_MIMEPART:
+        case SEARCH_SAVEDATESUPPORTED:
+            return FALSE; /* not in MVP */
+        default:
+            return FALSE;
+        }
+    }
+    return TRUE;
 }
 
 struct mail_search_context *
@@ -45,33 +170,43 @@ exmdbc_search_init(struct mailbox_transaction_context *t,
 		  enum mail_fetch_field wanted_fields,
 		  struct mailbox_header_lookup_ctx *wanted_headers)
 {
-	fprintf(stdout, "!!! exmdbc_search_init called\n");
+	i_debug("[exmdbc] exmdbc_search_init called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(t->box);
-	struct mail_search_context *ctx;
-	struct exmdbc_search_context *ictx;
-	struct exmdbc_command *cmd;
-	const char *search_query;
+	struct mail_search_context *_ctx =
+		index_storage_search_init(t, args, sort_program, wanted_fields, wanted_headers);
 
-	ctx = index_storage_search_init(t, args, sort_program,
-					wanted_fields, wanted_headers);
-
-	if (!exmdbc_build_search_query(mbox, args, &search_query)) {
-		/* can't optimize this with SEARCH */
-		return ctx;
+	struct exmdbc_search_spec spec;
+	if (!exmdbc_build_spec_from_args(mbox, args->args, &spec)) {
+		i_debug("exmdbc: SEARCH fallback to local (unsupported query)");
+		return _ctx;
 	}
 
-	ictx = i_new(struct exmdbc_search_context, 1);
-	i_array_init(&ictx->rseqs, 64);
-	MODULE_CONTEXT_SET(ctx, exmdbc_storage_module, ictx);
+	uint32_t *uids = NULL; unsigned count = 0;
+	const char *username = t->box->list->ns->user->username;
 
+	int rc = exmdbc_client_search_uids(mbox->storage->client->client,
+									mbox->folder_id, username,
+									&spec, &uids, &count);
+	if (rc < 0) {
+		i_debug("exmdbc: SEARCH RPC failed, fallback to local");
+		return _ctx;
+	}
 
-	//TODO:EXMDBC:
-	return ctx;
+	struct exmdbc_search_context *ctx = i_new(struct exmdbc_search_context, 1);
+	ctx->uids = uids;
+	ctx->count = count;
+	ctx->pos = 0;
+	ctx->finished = TRUE;
+
+	MODULE_CONTEXT_SET(_ctx, exmdbc_storage_module, ctx);
+	i_debug("exmdbc: SEARCH offloaded: %u hits", count);
+	return _ctx;
+
 }
 
 static void exmdbc_search_set_matches(struct mail_search_arg *args)
 {
-	fprintf(stdout, "!!! exmdbc_search_set_matches called\n");
+	i_debug("[exmdbc] exmdbc_search_set_matches called\n");
 	for (; args != NULL; args = args->next) {
 		if (args->type == SEARCH_OR ||
 		    args->type == SEARCH_SUB)
@@ -81,38 +216,63 @@ static void exmdbc_search_set_matches(struct mail_search_arg *args)
 	}
 }
 
-bool exmdbc_search_next_update_seq(struct mail_search_context *ctx)
+bool exmdbc_search_next_nonblock(struct mail_search_context *_ctx,
+								 struct mail **mail_r, bool *tryagain_r)
 {
-	fprintf(stdout, "!!! exmdbc_search_next_update_seq called\n");
-	struct exmdbc_search_context *ictx = EXMDBC_SEARCHCTX(ctx);
+	i_debug("[exmdbc] exmdbc_search_next_nonblock called\n");
+	struct exmdbc_search_context *ctx =
+		MODULE_CONTEXT(_ctx, exmdbc_storage_module);
 
-	if (ictx == NULL || !ictx->success)
-		return index_storage_search_next_update_seq(ctx);
+	if (tryagain_r != NULL)
+		*tryagain_r = FALSE;
 
-	if (!seq_range_array_iter_nth(&ictx->iter, ictx->n++, &ctx->seq))
-		return FALSE;
-	ctx->progress_cur = ctx->seq;
+	if (ctx == NULL) {
+		return index_storage_search_next_nonblock(_ctx, mail_r, tryagain_r);
+	}
 
-	exmdbc_search_set_matches(ctx->args->args);
-	return TRUE;
+	struct mailbox *box = _ctx->transaction->box;
+
+	while (ctx->pos < ctx->count) {
+		uint32_t uid = ctx->uids[ctx->pos++];
+		uint32_t seq = 0;
+
+		if (!mail_index_lookup_seq(box->view, uid, &seq) || seq == 0)
+			continue;
+
+		struct mail *mail = mail_alloc(_ctx->transaction, 0, NULL);
+		mail_set_seq(mail, seq);
+		*mail_r = mail;
+		return TRUE;
+	}
+
+	*mail_r = NULL;
+	return FALSE;
+}
+
+bool exmdbc_search_next_update_seq(struct mail_search_context *_ctx)
+{
+	i_debug("[exmdbc] exmdbc_search_next_update_seq called\n");
+	struct exmdbc_search_context *ctx =
+		MODULE_CONTEXT(_ctx, exmdbc_storage_module);
+
+	return index_storage_search_next_update_seq(_ctx);
 }
 
 int exmdbc_search_deinit(struct mail_search_context *ctx)
 {
-	fprintf(stdout, "!!! exmdbc_search_deinit called\n");
-	struct exmdbc_search_context *ictx = EXMDBC_SEARCHCTX(ctx);
-
-	if (ictx != NULL) {
-		array_free(&ictx->rseqs);
-		i_free(ictx);
+	i_debug("[exmdbc] exmdbc_search_deinit called\n");
+	struct exmdbc_search_context *xctx = MODULE_CONTEXT(ctx, exmdbc_storage_module);
+	if (xctx != NULL) {
+		free(xctx->uids);
+		i_free(xctx);
 	}
-	return index_storage_search_deinit(ctx);
+	index_storage_search_deinit(ctx);
 }
 
 void exmdbc_search_reply_search(const struct exmdbc_arg *args,
 			       struct exmdbc_mailbox *mbox)
 {
-	fprintf(stdout, "!!! exmdbc_search_reply_search called\n");
+	i_debug("[exmdbc] exmdbc_search_reply_search called\n");
 	struct event *event = mbox->box.event;
 
 	//TODO:EXMDBC:
@@ -141,7 +301,7 @@ void exmdbc_search_reply_search(const struct exmdbc_arg *args,
 void exmdbc_search_reply_esearch(const struct exmdbc_arg *args,
 				struct exmdbc_mailbox *mbox)
 {
-	fprintf(stdout, "!!! exmdbc_search_reply_esearch called\n");
+	i_debug("[exmdbc] exmdbc_search_reply_esearch called\n");
 	struct event *event = mbox->box.event;
 	const char *atom;
 

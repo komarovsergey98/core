@@ -22,35 +22,6 @@ enum mail_flags {
 	MAIL_FLAGS_NONRECENT = (MAIL_FLAGS_MASK ^ MAIL_RECENT)
 };
 
-enum mailbox_info_flags {
-	MAILBOX_NOSELECT		= 0x001,
-	MAILBOX_NONEXISTENT		= 0x002,
-	MAILBOX_CHILDREN		= 0x004,
-	MAILBOX_NOCHILDREN		= 0x008,
-	MAILBOX_NOINFERIORS		= 0x010,
-	MAILBOX_MARKED			= 0x020,
-	MAILBOX_UNMARKED		= 0x040,
-	MAILBOX_SUBSCRIBED		= 0x080,
-	MAILBOX_CHILD_SUBSCRIBED	= 0x100,
-	MAILBOX_CHILD_SPECIALUSE	= 0x200,
-
-	/* Internally used by lib-storage, use mailbox_info.special_use
-	   to actually access these: */
-	MAILBOX_SPECIALUSE_ALL		= 0x00010000,
-	MAILBOX_SPECIALUSE_ARCHIVE	= 0x00020000,
-	MAILBOX_SPECIALUSE_DRAFTS	= 0x00040000,
-	MAILBOX_SPECIALUSE_FLAGGED	= 0x00080000,
-	MAILBOX_SPECIALUSE_JUNK		= 0x00100000,
-	MAILBOX_SPECIALUSE_SENT		= 0x00200000,
-	MAILBOX_SPECIALUSE_TRASH	= 0x00400000,
-	MAILBOX_SPECIALUSE_IMPORTANT	= 0x00800000,
-#define MAILBOX_SPECIALUSE_MASK		  0x00ff0000
-
-	/* Internally used by lib-storage: */
-	MAILBOX_SELECT			= 0x20000000,
-	MAILBOX_MATCHED			= 0x40000000
-};
-
 enum exmdbc_fetch_field {
 	MAIL_FETCH_FLAGS		= 0x00000001,
 	MAIL_FETCH_MESSAGE_PARTS	= 0x00000002,
@@ -86,6 +57,35 @@ enum exmdbc_fetch_field {
 	MAIL_FETCH_REFCOUNT_ID		= 0x02000000,
 };
 
+enum mailbox_info_flags {
+	MAILBOX_NOSELECT		= 0x001,
+	MAILBOX_NONEXISTENT		= 0x002,
+	MAILBOX_CHILDREN		= 0x004,
+	MAILBOX_NOCHILDREN		= 0x008,
+	MAILBOX_NOINFERIORS		= 0x010,
+	MAILBOX_MARKED			= 0x020,
+	MAILBOX_UNMARKED		= 0x040,
+	MAILBOX_SUBSCRIBED		= 0x080,
+	MAILBOX_CHILD_SUBSCRIBED	= 0x100,
+	MAILBOX_CHILD_SPECIALUSE	= 0x200,
+
+	/* Internally used by lib-storage, use mailbox_info.special_use
+	   to actually access these: */
+	MAILBOX_SPECIALUSE_ALL		= 0x00010000,
+	MAILBOX_SPECIALUSE_ARCHIVE	= 0x00020000,
+	MAILBOX_SPECIALUSE_DRAFTS	= 0x00040000,
+	MAILBOX_SPECIALUSE_FLAGGED	= 0x00080000,
+	MAILBOX_SPECIALUSE_JUNK		= 0x00100000,
+	MAILBOX_SPECIALUSE_SENT		= 0x00200000,
+	MAILBOX_SPECIALUSE_TRASH	= 0x00400000,
+	MAILBOX_SPECIALUSE_IMPORTANT	= 0x00800000,
+#define MAILBOX_SPECIALUSE_MASK		  0x00ff0000
+
+	/* Internally used by lib-storage: */
+	MAILBOX_SELECT			= 0x20000000,
+	MAILBOX_MATCHED			= 0x40000000
+};
+
 // FILETIME → time_t (Unix epoch)
 static inline time_t filetime_to_time_t(uint64_t filetime)
 {
@@ -97,8 +97,6 @@ static uint64_t unix_time_to_filetime(time_t t) {
 	const uint64_t EPOCH_DIFF = 11644473600ULL; // seconds
 	return ((uint64_t)t + EPOCH_DIFF) * 10000000ULL;
 }
-
-
 
 #define ADD_STR(tag, field) \
 	if ((props->field) && *(props->field)) { \
@@ -168,7 +166,7 @@ char *get_utf8_from_props(const struct TPROPVAL_ARRAY *props, uint32_t tag_unico
 }
 
 int exmdb_client_create(struct exmdb_client **client_ptr) {
-	fprintf(stdout, "[EXMDB] exmdbc_client_ping_store client is local\n");
+	fprintf(stderr, "[EXMDB] exmdbc_client_ping_store client is local\n");
 	if (!client_ptr)
 		return EXIT_FAILURE;
 
@@ -209,7 +207,7 @@ void exmdb_client_free(struct exmdb_client **client_ptr) {
 
 int exmdbc_client_ping_store(const char *dir)
 {
-	fprintf(stdout, "[EXMDBC] exmdbc_client_ping_store client is remote\n");
+	fprintf(stderr, "[EXMDBC] exmdbc_client_ping_store client is remote\n");
 	return exmdb_client_remote::ping_store(dir);
 }
 
@@ -228,6 +226,7 @@ int exmdbc_client_get_folders_dtos(struct exmdb_client *client,
 	const char *username, unsigned int max_count,
 	unsigned int *out_count)
 {
+	fprintf(stderr, "[EXMDB] exmdbc_client_get_folders_dtos called\n");
 	*out_count = 0;
 	if (client == nullptr || username == nullptr) {
 		fprintf(stderr, "[EXMDB] Invalid arguments\n");
@@ -241,13 +240,10 @@ int exmdbc_client_get_folders_dtos(struct exmdb_client *client,
 	char *eid = nullptr;
 	unsigned int user_id = 0, domain_id = 0;
 
-	fprintf(stderr, "[EXMDB] Resolving EID for user: %s\n", username);
 	if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id)) {
 		fprintf(stderr, "[EXMDB] store_eid_to_user failed for user: %s\n", username);
 		return -1;
 	}
-
-	fprintf(stderr, "[EXMDB] store_eid_to_user -> eid=%s\n", eid);
 	uint64_t fid = 0;
 	auto empty_idset = idset::create(idset::type::id_packed);
 
@@ -275,7 +271,7 @@ int exmdbc_client_get_folders_dtos(struct exmdb_client *client,
 		// auto content_count = row.get<const uint32_t>(PR_CONTENT_COUNT);
 		auto folder_id = row.get<const uint64_t>(PidTagFolderId);
 
-		fprintf(stderr, "[EXMDB] folder name: %s,  folder pathname: %s\n", name, pathname);
+		// fprintf(stderr, "[EXMDB] folder name: %s,  folder pathname: %s\n", name, pathname);
 
 		if (name == nullptr)
 			continue;
@@ -310,6 +306,8 @@ int exmdbc_client_get_folders_dtos(struct exmdb_client *client,
 
 int exmdbc_client_get_folder_dtos(struct exmdb_client *client, uint64_t folder_id, struct exmdb_folder_metadata *folder_metadata, const char *username)
 {
+
+	fprintf(stderr, "[EXMDB] exmdbc_client_get_folder_dtos called\n");
 	if (client == nullptr || username == nullptr) {
 		fprintf(stderr, "[EXMDB] Invalid arguments\n");
 		return -1;
@@ -322,18 +320,12 @@ int exmdbc_client_get_folder_dtos(struct exmdb_client *client, uint64_t folder_i
 	char *eid = nullptr;
 	unsigned int user_id = 0, domain_id = 0;
 
-	fprintf(stderr, "[EXMDB] Resolving EID for user: %s\n", username);
 	if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id)) {
 		fprintf(stderr, "[EXMDB] store_eid_to_user failed for user: %s\n", username);
 		return -1;
 	}
 
-	fprintf(stderr, "[EXMDB] store_eid_to_user -> eid=%s\n", eid);
-
-
 	uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
-
-
 
 	static constexpr uint32_t ftags2[] = {PR_CONTENT_COUNT, PR_ASSOC_CONTENT_COUNT, PR_FOLDER_CHILD_COUNT, PR_CHANGE_KEY};
 	static constexpr PROPTAG_ARRAY ftaghdr2 = {std::size(ftags2), deconst(ftags2)};
@@ -439,6 +431,7 @@ int exmdbc_read_message_metadata(uint64_t message_id, struct TPROPVAL_ARRAY *pro
 
 int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t folder_id, uint64_t message_id, const char *username, struct message_properties *msgs_props, uint32_t fields)
 {
+	fprintf(stderr, "[EXMDB] exmdbc_client_get_message_properties called\n");
     if (!client || !username || !msgs_props) {
         fprintf(stderr, "[EXMDB] Invalid arguments to get_message_properties\n");
         return -1;
@@ -587,6 +580,7 @@ int exmdbc_client_get_message_properties(struct exmdb_client *client, uint64_t f
 
 int exmdbc_client_mark_message_read(struct exmdb_client *client, const char *username, uint64_t message_id, int mark_as_read, uint64_t *change_number_out)
 {
+	fprintf(stderr, "[EXMDB] exmdbc_client_mark_message_read called\n");
 	if (!client || !username) {
 		fprintf(stderr, "[EXMDB] Invalid arguments to mark_message_read\n");
 		return -1;
@@ -614,6 +608,7 @@ int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t fold
     struct message_properties *messages, unsigned int max_count,
     const char *username, uint32_t first_uid)
 {
+	fprintf(stderr, "[EXMDB] exmdbc_client_get_folder_messages called\n");
     if (!client || !messages || !username) {
         fprintf(stderr, "[EXMDBC] Invalid arguments\n");
         return -1;
@@ -626,14 +621,10 @@ int exmdbc_client_get_folder_messages(struct exmdb_client *client, uint64_t fold
 	char *eid = nullptr;
 	unsigned int user_id = 0, domain_id = 0;
 
-	fprintf(stderr, "[EXMDB] Resolving EID for user: %s\n", username);
 	if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id)) {
 		fprintf(stderr, "[EXMDB] store_eid_to_user failed for user: %s\n", username);
 		return -1;
 	}
-
-	fprintf(stderr, "[EXMDB] store_eid_to_user -> eid=%s\n", eid);
-
 
 	uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
 
@@ -697,6 +688,7 @@ int exmdbc_client_set_message_properties(struct exmdb_client *client,
 	uint64_t folder_id, uint64_t message_id,
 	const char *username, const message_properties *props)
 {
+	fprintf(stderr, "[EXMDB] exmdbc_client_set_message_properties called\n");
     if (!client || !username || !props) {
         fprintf(stderr, "[EXMDBC] Invalid args\n");
         return -1;
@@ -992,6 +984,7 @@ size_t body_len, uint64_t *out_mid, uint32_t imap_flags)
 int exmdbc_client_copy_message(struct exmdb_client *client, uint64_t src_message_id, uint64_t dst_folder_id,
 	const char *username)
 {
+	fprintf(stderr, "[EXMDB] exmdbc_client_copy_message called\n");
 	if (!client || !username) {
 		fprintf(stderr, "[EXMDB] Invalid arguments in copy_message\n");
 		return -1;
@@ -1034,7 +1027,188 @@ int exmdbc_client_copy_message(struct exmdb_client *client, uint64_t src_message
 	delete eid;
 	return 0;
 }
+static const RESTRICTION*
+build_restriction(const exmdbc_search_spec *spec,
+                  std::vector<SRestriction>         &nodes,
+                  std::vector<SPropertyRestriction> &props,
+                  std::vector<SBitMaskRestriction>  &bmsk,
+                  std::vector<SContentRestriction>  &cont,
+                  restriction_list                  &root_and)
+{
+    nodes.clear(); props.clear(); bmsk.clear(); cont.clear();
+    if (!spec) return nullptr;
 
+    auto push_prop = [&](const SPropertyRestriction &pr){
+        props.push_back(pr);
+        SRestriction r{}; r.rt = RES_PROPERTY; r.prop = &props.back();
+        nodes.push_back(r);
+    };
+    auto push_bm = [&](const SBitMaskRestriction &bm) {
+        bmsk.push_back(bm);
+        SRestriction r{}; r.rt = RES_BITMASK; r.bm = &bmsk.back();
+        nodes.push_back(r);
+    };
+    auto push_cont = [&](const SContentRestriction &cr) {
+        cont.push_back(cr);
+        SRestriction r{}; r.rt = RES_CONTENT; r.cont = &cont.back();
+        nodes.push_back(r);
+    };
 
+    //SEEN/UNSEEN - PR_MESSAGE_FLAGS bitmask
+    constexpr uint32_t MSGFLAG_READ = 0x0001;
+    if (spec->want_unseen && !spec->want_seen) {
+        SBitMaskRestriction bm{ BMR_EQZ, PR_MESSAGE_FLAGS, MSGFLAG_READ };
+        push_bm(bm);
+    } else if (spec->want_seen && !spec->want_unseen) {
+        SBitMaskRestriction bm{ BMR_NEZ, PR_MESSAGE_FLAGS, MSGFLAG_READ };
+        push_bm(bm);
+    }
+
+    //UID range via PidTagMid GE/LE
+    if (spec->uid_lo || spec->uid_hi) {
+        auto lo = (std::uint64_t)(spec->uid_lo ? spec->uid_lo : 0);
+        auto hi = (std::uint64_t)(spec->uid_hi ? spec->uid_hi : 0xFFFFFFFFULL);
+
+        SPropertyRestriction ge{};
+        ge.relop   = RELOP_GE;
+        ge.proptag = PidTagMid;
+        ge.propval.proptag = CHANGE_PROP_TYPE(PidTagMid, PT_I8);
+        ge.propval.pvalue  = &lo;
+
+        SPropertyRestriction le{};
+        le.relop   = RELOP_LE;
+        le.proptag = PidTagMid;
+        le.propval.proptag = CHANGE_PROP_TYPE(PidTagMid, PT_I8);
+        le.propval.pvalue  = &hi;
+
+        props.push_back(ge); props.back().propval.pvalue = &((SPropertyRestriction&)props.back()).propval;
+        props.back().propval.pvalue = &lo;
+        SRestriction r1{}; r1.rt = RES_PROPERTY; r1.prop = &props.back(); nodes.push_back(r1);
+
+        props.push_back(le); props.back().propval.pvalue = &hi;
+        SRestriction r2{}; r2.rt = RES_PROPERTY; r2.prop = &props.back(); nodes.push_back(r2);
+    }
+
+    //Dates on PR_MESSAGE_DELIVERY_TIME (SINCE >=, BEFORE <)
+    gromox::mapitime_t ft_since=0, ft_before=0;
+    if (spec->since_utc) {
+        ft_since = unix_time_to_filetime(spec->since_utc);
+        SPropertyRestriction pr{};
+        pr.relop = RELOP_GE; pr.proptag = PR_MESSAGE_DELIVERY_TIME;
+        pr.propval.proptag = CHANGE_PROP_TYPE(PR_MESSAGE_DELIVERY_TIME, PT_SYSTIME);
+        pr.propval.pvalue  = &ft_since;
+        push_prop(pr);
+    }
+    if (spec->before_utc) {
+        ft_before = unix_time_to_filetime(spec->before_utc);
+        SPropertyRestriction pr{};
+        pr.relop = RELOP_LT; pr.proptag = PR_MESSAGE_DELIVERY_TIME;
+        pr.propval.proptag = CHANGE_PROP_TYPE(PR_MESSAGE_DELIVERY_TIME, PT_SYSTIME);
+        pr.propval.pvalue  = &ft_before;
+        push_prop(pr);
+    }
+
+    //Headers contains
+    auto add_contains = [&](gromox::proptag_t tag, const char *s){
+        if (!s || !*s) return;
+        SContentRestriction cr{};
+        cr.fuzzy_level = FL_SUBSTRING | FL_IGNORECASE;
+        cr.proptag = tag;
+        cr.propval.proptag = CHANGE_PROP_TYPE(tag, PT_UNICODE);
+        cr.propval.pvalue  = (void*)s;
+        push_cont(cr);
+    };
+    add_contains(PR_SUBJECT,     spec->subject);
+    add_contains(PR_SENDER_NAME, spec->from_);
+    add_contains(PR_DISPLAY_TO,  spec->to_);
+    add_contains(PR_DISPLAY_CC,  spec->cc);
+
+    //Size filters
+    std::uint32_t v_smaller=0, v_larger=0;
+    if (spec->smaller_than) {
+        v_smaller = spec->smaller_than;
+        SPropertyRestriction pr{};
+        pr.relop = RELOP_LT; pr.proptag = PR_MESSAGE_SIZE;
+        pr.propval.proptag = CHANGE_PROP_TYPE(PR_MESSAGE_SIZE, PT_LONG);
+        pr.propval.pvalue  = &v_smaller;
+        push_prop(pr);
+    }
+    if (spec->larger_than) {
+        v_larger = spec->larger_than;
+        SPropertyRestriction pr{};
+        pr.relop = RELOP_GT; pr.proptag = PR_MESSAGE_SIZE;
+        pr.propval.proptag = CHANGE_PROP_TYPE(PR_MESSAGE_SIZE, PT_LONG);
+        pr.propval.pvalue  = &v_larger;
+        push_prop(pr);
+    }
+
+    if (nodes.empty()) return nullptr; //All
+
+    root_and.count = (uint32_t)nodes.size();
+    root_and.pres  = nodes.data();
+
+    static SRestriction root;
+    root.rt = RES_AND;
+    root.andor = &root_and;
+    return &root;
+}
+
+int exmdbc_client_search_uids(struct exmdb_client *client,
+                           uint64_t folder_id,
+                           const char *username,
+                           struct exmdbc_search_spec *spec,
+                           uint32_t **uids_r, unsigned *count_r)
+{
+    if (!client || !username || !uids_r || !count_r) return -1;
+    *uids_r = nullptr; *count_r = 0;
+
+    STORE_ENTRYID store{0,0,0,0,{},0, deconst(username), deconst(username)};
+    store.wrapped_provider_uid = g_muidStorePrivate;
+
+    char *eid = nullptr; unsigned user_id=0, domain_id=0;
+    if (!exmdb_client_remote::store_eid_to_user(client->dir, &store, &eid, &user_id, &domain_id))
+        return -1;
+
+    const std::uint64_t eid_folder = rop_util_make_eid_ex(1, folder_id);
+
+    std::vector<SRestriction>         nodes; nodes.reserve(16);
+    std::vector<SPropertyRestriction> props; props.reserve(16);
+    std::vector<SBitMaskRestriction>  bmsk;  bmsk.reserve(4);
+    std::vector<SContentRestriction>  cont;  cont.reserve(8);
+    restriction_list root_and{};
+
+    const RESTRICTION *prestr = build_restriction(spec, nodes, props, bmsk, cont, root_and);
+
+    const SORTORDER_SET *psorts = nullptr; // TODO: map IMAP SORT if needed
+
+    uint32_t table_id = 0, row_count = 0;
+    if (!exmdb_client_remote::load_content_table(eid, CP_UTF8, eid_folder, username, 0, prestr, psorts, &table_id, &row_count))
+        return -1;
+
+    static constexpr gromox::proptag_t cols[] = { PidTagMid };
+    PROPTAG_ARRAY tags{ std::size(cols), deconst(cols) };
+
+    TARRAY_SET tset{};
+    if (!exmdb_client_remote::query_table(eid, username, CP_UTF8, table_id,
+            &tags, 0, row_count, &tset)) {
+        exmdb_client_remote::unload_table(eid, table_id);
+        return -1;
+    }
+
+    const auto out = static_cast<std::uint32_t *>(std::malloc(sizeof(std::uint32_t) * tset.count));
+    if (!out) { exmdb_client_remote::unload_table(eid, table_id); return -1; }
+
+    unsigned n = 0;
+    for (uint32_t i = 0; i < tset.count; ++i) {
+        const auto &row = *tset.pparray[i];
+        const std::uint64_t *mid64 = row.get<const std::uint64_t>(PidTagMid);
+        std::uint32_t uid = mid64 ? (std::uint32_t)rop_util_get_gc_value(*mid64) : 0;
+        if (uid != 0) out[n++] = uid;
+    }
+
+    exmdb_client_remote::unload_table(eid, table_id);
+    *uids_r = out; *count_r = n;
+    return (int)n;
+}
 
 }

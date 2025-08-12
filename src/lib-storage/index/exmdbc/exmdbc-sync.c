@@ -23,7 +23,7 @@ static int find_uid_in_array(const uint32_t uid, const uint32_t *array, const ui
 
 int exmdbc_mailbox_sync(const struct exmdbc_mailbox *mbox)
 {
-    fprintf(stdout, "!!! exmdbc_sync called\n");
+    i_debug("[exmdbc] exmdbc_sync called\n");
     struct mail_index_view *view = mbox->box.view;
     struct mail_index_transaction *trans = mail_index_transaction_begin(view, 0);
 
@@ -43,7 +43,7 @@ int exmdbc_mailbox_sync(const struct exmdbc_mailbox *mbox)
 		full_resync = true;
 	}
 
-    unsigned int max_messages = 1000;
+    unsigned int max_messages = 50;//mbox->exists_count;
     struct message_properties *messages = calloc(max_messages, sizeof(*messages));
     if (!messages) {
         fprintf(stderr, "Failed to allocate memory\n");
@@ -99,7 +99,7 @@ int exmdbc_mailbox_sync(const struct exmdbc_mailbox *mbox)
             uint32_t lseq;
             mail_index_append(trans, mid, &lseq);
             mail_index_update_flags(trans, lseq, MODIFY_ADD, messages[i].flags);
-            fprintf(stderr, "[EXMDBC] New index was added -> lseq=%u, uid=%u\n", lseq, mid);
+            //fprintf(stderr, "[EXMDBC] New index was added -> lseq=%u, uid=%u\n", lseq, mid);
         }
     }
 
@@ -133,10 +133,19 @@ int exmdbc_mailbox_sync(const struct exmdbc_mailbox *mbox)
 
 struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum mailbox_sync_flags flags)
 {
-	fprintf(stdout, "!!! exmdbc_mailbox_sync_init called\n");
+	i_debug("[exmdbc] exmdbc_mailbox_sync_init called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
 	struct exmdbc_mailbox_list *list = mbox->storage->client->_list;
 	int ret = 0;
+
+	//
+	// T_BEGIN {
+	// 	ARRAY_TYPE(seq_range) uids;
+	//
+	// 	t_array_init(&uids, 64);
+	// 	mailbox_get_uid_range(&mbox->box, &arg->value.seqset,
+	// 				  &uids);
+	// } T_END;
 
 	if (index_mailbox_want_full_sync(&mbox->box, flags)) {
 		struct exmdbc_mailbox_list_iterate_context *ctx =
@@ -168,4 +177,25 @@ struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum
 	// }
 
 	return index_mailbox_sync_init(box, flags, ret < 0);
+}
+
+bool exmdbc_mailbox_sync_next(struct mailbox_sync_context *_ctx, struct mailbox_sync_rec *sync_rec_r)
+{
+	struct index_mailbox_sync_context *ctx =
+		(struct index_mailbox_sync_context *)_ctx;
+	const struct seq_range *range;
+	unsigned int count;
+
+	if (ctx->failed)
+		return FALSE;
+
+	range = array_get(&ctx->flag_updates, &count);
+	if (ctx->flag_update_idx < count) {
+		sync_rec_r->type = MAILBOX_SYNC_TYPE_FLAGS;
+		sync_rec_r->seq1 = range[ctx->flag_update_idx].seq1;
+		sync_rec_r->seq2 = range[ctx->flag_update_idx].seq2;
+		ctx->flag_update_idx++;
+		return TRUE;
+	}
+	return index_mailbox_sync_next(_ctx, sync_rec_r);
 }

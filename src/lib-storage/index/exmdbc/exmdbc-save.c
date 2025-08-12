@@ -58,7 +58,7 @@ void exmdbc_transaction_save_rollback(struct mail_save_context *_ctx)
 struct mail_save_context *
 exmdbc_save_alloc(struct mailbox_transaction_context *t)
 {
-	fprintf(stdout, "!!! exmdbc_save_alloc called\n");
+	i_debug("[exmdbc] exmdbc_save_alloc called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(t->box);
 	struct exmdbc_save_context *ctx;
 	pool_t pool;
@@ -100,7 +100,7 @@ int create_temp_file(const char **path_r)
 
 int exmdbc_save_begin(struct mail_save_context *_ctx, struct istream *input)
 {
-	fprintf(stdout, "!!! exmdbc_save_begin called\n");
+	i_debug("[exmdbc] exmdbc_save_begin called\n");
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	int temp_fd = create_temp_file(&ctx->temp_path);
 	if (temp_fd == -1) {
@@ -120,7 +120,7 @@ int exmdbc_save_begin(struct mail_save_context *_ctx, struct istream *input)
 int exmdbc_save_continue(struct mail_save_context *_ctx)
 {
 
-	fprintf(stdout, "!!! exmdbc_save_continue called\n");
+	i_debug("[exmdbc] exmdbc_save_continue called\n");
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 
 	if (ctx->failed)
@@ -201,8 +201,7 @@ int exmdbc_save_append(struct exmdbc_save_context *ctx)
 
 int exmdbc_save_finish(struct mail_save_context *_ctx)
 {
-	sleep(20);
-	fprintf(stdout, "!!! exmdbc_save_finish called\n");
+	i_debug("[exmdbc] exmdbc_save_finish called\n");
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	ctx->finished = TRUE;
 
@@ -225,7 +224,7 @@ int exmdbc_save_finish(struct mail_save_context *_ctx)
 
 void exmdbc_save_cancel(struct mail_save_context *_ctx)
 {
-	fprintf(stdout, "!!! exmdbc_save_cancel called\n");
+	i_debug("[exmdbc] exmdbc_save_cancel called\n");
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 
 	ctx->failed = TRUE;
@@ -235,7 +234,7 @@ void exmdbc_save_cancel(struct mail_save_context *_ctx)
 
 int exmdbc_transaction_save_commit_pre(struct mail_save_context *_ctx)
 {
-	fprintf(stdout, "!!! exmdbc_transaction_save_commit_pre called\n");
+	i_debug("[exmdbc] exmdbc_transaction_save_commit_pre called\n");
 
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	struct mail_transaction_commit_changes *changes =
@@ -284,7 +283,7 @@ static bool exmdbc_is_mail_expunged(struct exmdbc_save_context *ctx, uint32_t ui
 
 int exmdbc_copy(struct mail_save_context *_ctx, struct mail *mail)
 {
-	fprintf(stdout, "!!! exmdbc_copy called\n");
+	i_debug("[exmdbc] exmdbc_copy called\n");
 
 	struct exmdbc_save_context *ctx = EXMDBC_SAVECTX(_ctx);
 	struct mailbox_transaction_context *_t = _ctx->transaction;

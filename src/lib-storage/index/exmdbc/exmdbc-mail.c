@@ -15,7 +15,7 @@ exmdbc_mail_alloc(struct mailbox_transaction_context *t,
                   enum mail_fetch_field wanted_fields,
                   struct mailbox_header_lookup_ctx *wanted_headers)
 {
-	fprintf(stdout, "!!! exmdbc_mail_alloc called\n");
+	i_debug("[exmdbc] exmdbc_mail_alloc called\n");
 	struct exmdbc_mail *mail;
 	pool_t pool = pool_alloconly_create("exmdbc_mail", 2048);
 
@@ -28,7 +28,7 @@ exmdbc_mail_alloc(struct mailbox_transaction_context *t,
 
 static bool exmdbc_mail_is_expunged(struct mail *_mail)
 {
-	fprintf(stdout, "!!! exmdbc_mail_is_expunged called\n");
+	i_debug("[exmdbc] exmdbc_mail_is_expunged called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct exmdbc_msgmap *msgmap;
 	uint32_t lseq, rseq;
@@ -55,7 +55,7 @@ static bool exmdbc_mail_is_expunged(struct mail *_mail)
 
 static int exmdbc_mail_failed(struct mail *mail, const char *field)
 {
-	fprintf(stdout, "!!! exmdbc_mail_failed called\n");
+	i_debug("[exmdbc] exmdbc_mail_failed called\n");
 	//TODO:EXMDBC:
 	if (mail->expunged || exmdbc_mail_is_expunged(mail)) {
 		mail_set_expunged(mail);
@@ -70,7 +70,7 @@ static int exmdbc_mail_failed(struct mail *mail, const char *field)
 
 static int exmdbc_mail_get_received_date(struct mail *_mail, time_t *date_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_received_date called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_received_date called\n");
 	struct index_mail *mail = INDEX_MAIL(_mail);
 	struct index_mail_data *data = &mail->data;
 
@@ -94,7 +94,7 @@ static int exmdbc_mail_get_received_date(struct mail *_mail, time_t *date_r)
 
 static int exmdbc_mail_get_save_date(struct mail *_mail, time_t *date_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_save_date called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_save_date called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct index_mail *mail = INDEX_MAIL(_mail);
 	struct index_mail_data *data = &mail->data;
@@ -108,7 +108,7 @@ static int exmdbc_mail_get_save_date(struct mail *_mail, time_t *date_r)
 
 static int exmdbc_mail_get_physical_size(struct mail *_mail, uoff_t *size_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_physical_size called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_physical_size called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct index_mail *mail = INDEX_MAIL(_mail);
 	struct index_mail_data *data = &mail->data;
@@ -125,7 +125,7 @@ static int exmdbc_mail_get_physical_size(struct mail *_mail, uoff_t *size_r)
 	const char *username = mbox->box.list->ns->user->username;
 
 	if (exmdbc_client_get_message_properties(mbox->storage->client->client, mbox->folder_id, _mail->uid, username, &msg_props, MAIL_FETCH_PHYSICAL_SIZE) < 0) {
-		fprintf(stdout, "!!! exmdbc_mail_get_physical_size failed retrieve msg props\n");
+		i_debug("[exmdbc] exmdbc_mail_get_physical_size failed retrieve msg props\n");
 		return -1;
 	}
 
@@ -140,7 +140,7 @@ static int exmdbc_mail_get_physical_size(struct mail *_mail, uoff_t *size_r)
 
 static int exmdbc_mail_get_virtual_size(struct mail *_mail, uoff_t *size_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_virtual_size called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_virtual_size called\n");
 	struct index_mail *mail = INDEX_MAIL(_mail);
 	struct index_mail_data *data = &mail->data;
 
@@ -154,7 +154,7 @@ static int exmdbc_mail_get_header_stream(struct mail *_mail,
 			     struct mailbox_header_lookup_ctx *headers,
 			     struct istream **stream_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_header_stream called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_header_stream called\n");
 
 	struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
@@ -185,7 +185,7 @@ static int
 exmdbc_mail_get_headers(struct mail *_mail, const char *field,
 		       bool decode_to_utf8, const char *const **value_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_headers called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_headers called\n");
 	struct mailbox_header_lookup_ctx *headers;
 	const char *header_names[2];
 	const unsigned char *data;
@@ -211,7 +211,7 @@ static int
 exmdbc_mail_get_first_header(struct mail *_mail, const char *field,
 			    bool decode_to_utf8, const char **value_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_first_header called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_first_header called\n");
 	const char *const *values;
 
 	const int ret = exmdbc_mail_get_headers(_mail, field, decode_to_utf8, &values);
@@ -226,7 +226,7 @@ exmdbc_mail_get_stream(struct mail *_mail, bool get_body,
 		      struct message_size *hdr_size,
 		      struct message_size *body_size, struct istream **stream_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_stream called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_stream called\n");
 	struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
 	struct index_mail_data *data = &mail->imail.data;
 	enum mail_fetch_field fetch_field;
@@ -272,7 +272,7 @@ exmdbc_mail_get_stream(struct mail *_mail, bool get_body,
 bool exmdbc_mail_has_headers_in_cache(struct index_mail *mail,
 				     struct mailbox_header_lookup_ctx *headers)
 {
-	fprintf(stdout, "!!! exmdbc_mail_has_headers_in_cache called\n");
+	i_debug("[exmdbc] exmdbc_mail_has_headers_in_cache called\n");
 	const struct mail *_mail = &mail->mail.mail;
 
 	for (unsigned int i = 0; i < headers->count; i++) {
@@ -285,7 +285,7 @@ bool exmdbc_mail_has_headers_in_cache(struct index_mail *mail,
 
 void exmdbc_mail_update_access_parts(struct index_mail *mail)
 {
-	fprintf(stdout, "!!! exmdbc_mail_update_access_parts called\n");
+	i_debug("[exmdbc] exmdbc_mail_update_access_parts called\n");
 	struct mail *_mail = &mail->mail.mail;
 	struct index_mail_data *data = &mail->data;
 	struct mailbox_header_lookup_ctx *header_ctx;
@@ -332,7 +332,7 @@ void exmdbc_mail_update_access_parts(struct index_mail *mail)
 
 static void exmdbc_mail_set_seq(struct mail *_mail, uint32_t seq, bool saving)
 {
-	fprintf(stdout, "!!! exmdbc_mail_set_seq called\n");
+	i_debug("[exmdbc] exmdbc_mail_set_seq called\n");
 	struct exmdbc_mail *exmdbc_mail = EXMDBC_MAIL(_mail);
 	struct index_mail *mail = &exmdbc_mail->imail;
 	struct exmdbc_mailbox *mbox = (struct exmdbc_mailbox *)_mail->box;
@@ -348,7 +348,7 @@ exmdbc_mail_add_temp_wanted_fields(struct mail *_mail,
 				  enum mail_fetch_field fields,
 				  struct mailbox_header_lookup_ctx *headers)
 {
-	fprintf(stdout, "!!! exmdbc_mail_add_temp_wanted_fields called\n");
+	i_debug("[exmdbc] exmdbc_mail_add_temp_wanted_fields called\n");
 	struct index_mail *mail = INDEX_MAIL(_mail);
 
 	index_mail_add_temp_wanted_fields(_mail, fields, headers);
@@ -358,7 +358,7 @@ exmdbc_mail_add_temp_wanted_fields(struct mail *_mail,
 
 static void exmdbc_mail_close(struct mail *_mail)
 {
-	fprintf(stdout, "!!! exmdbc_mail_close called\n");
+	i_debug("[exmdbc] exmdbc_mail_close called\n");
 	struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct exmdbc_mail_cache *cache = &mbox->prev_mail_cache;
@@ -387,7 +387,7 @@ static int
 exmdbc_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 		       const char **value_r)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_special called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_special called\n");
 
 	struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
 	struct index_mail *imail = &mail->imail;
@@ -435,7 +435,7 @@ exmdbc_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 
 static uint64_t exmdbc_mail_get_modseq(struct mail *_mail)
 {
-	fprintf(stdout, "!!! exmdbc_mail_get_modseq called\n");
+	i_debug("[exmdbc] exmdbc_mail_get_modseq called\n");
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct exmdbc_msgmap *msgmap = 0;
 	unsigned int count;
@@ -457,7 +457,7 @@ static uint64_t exmdbc_mail_get_modseq(struct mail *_mail)
 int exmdbcc_mail_fetch(struct mail *_mail, enum mail_fetch_field fields,
 			 const char *const *headers)
 {
-	fprintf(stdout, "!!! exmdbcc_mail_fetch called\n");
+	i_debug("[exmdbc] exmdbcc_mail_fetch called\n");
 	return -1;
 }
 

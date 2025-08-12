@@ -88,8 +88,6 @@ struct exmdbc_mailbox {
 	uint32_t sync_uid_next;
 	uint64_t sync_highestmodseq;
 	uint32_t sync_fetch_first_uid;
-	uint32_t sync_next_lseq;
-	uint32_t sync_next_rseq;
 	uint32_t exists_count;
 	uint32_t min_append_uid;
 	char *sync_gmail_pop3_search_tag;
@@ -109,8 +107,6 @@ struct exmdbc_mailbox {
 	bool selected:1;
 	bool exists_received:1;
 	bool state_fetching_uid1:1;
-	bool state_fetched_success:1;
-	bool rollback_pending:1;
 };
 
 // struct exmdbc_untagged_fetch_ctx {

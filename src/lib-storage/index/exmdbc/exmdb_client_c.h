@@ -55,9 +55,31 @@ struct message_properties {
     uint32_t size;
 };
 
-// C API
+struct exmdbc_search_spec {
+	/* flags */
+	uint8_t want_seen;    /* SEEN */
+	uint8_t want_unseen;  /* UNSEEN */
 
-    //TODO: Put username inside of client. Continue refactoring of client
+	/* single UID range [lo..hi]; 0 means “ignore bound” */
+	uint32_t uid_lo;
+	uint32_t uid_hi;
+
+	/* INTERNALDATE bounds (UTC) */
+	uint64_t since_utc;   /* >=  (time_t as uint64_t) */
+	uint64_t before_utc;  /* <   (time_t as uint64_t) */
+
+	/* substring (case-insensitive); NULL → ignore */
+	const char *subject;
+	const char *from_;
+	const char *to_;
+	const char *cc;
+
+	/* size filters (bytes); 0 → ignore */
+	uint32_t smaller_than; /* < */
+	uint32_t larger_than;  /* >  */
+};
+
+// C API
     int exmdb_client_create(struct exmdb_client **client_ptr);
 
     void exmdb_client_free(struct exmdb_client **client);
@@ -94,6 +116,8 @@ struct message_properties {
     int exmdbc_client_save_body( struct exmdb_client *client, uint64_t folder_id, const char *username, const void *body, size_t body_len, uint64_t *out_mid, uint32_t imap_flags);
 
     int exmdbc_client_copy_message(struct exmdb_client *client, uint64_t src_message_id, uint64_t dst_folder_id, const char *username);
+
+	int exmdbc_client_search_uids(struct exmdb_client *client, uint64_t folder_id, const char *username, struct exmdbc_search_spec *spec, uint32_t **uids_r, unsigned *count_r);
 
 #ifdef __cplusplus
 }
