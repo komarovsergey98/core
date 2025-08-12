@@ -73,7 +73,6 @@ struct exmdbc_mail_cache {
 struct exmdbc_mailbox {
 	struct mailbox box;
 	struct exmdbc_storage *storage;
-	struct exmdbc_client_mailbox *client_box;
 	uint64_t folder_id;
 
 	// struct mail_index_transaction *delayed_sync_trans;

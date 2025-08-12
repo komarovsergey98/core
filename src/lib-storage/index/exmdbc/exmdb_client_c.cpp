@@ -166,38 +166,44 @@ char *get_utf8_from_props(const struct TPROPVAL_ARRAY *props, uint32_t tag_unico
 }
 
 int exmdb_client_create(struct exmdb_client **client_ptr) {
-	fprintf(stderr, "[EXMDB] exmdbc_client_ping_store client is local\n");
+	// sleep(10);
+	fprintf(stderr, "[EXMDB] exmdb_client_create called ===================================================================\n");
 	if (!client_ptr)
 		return EXIT_FAILURE;
 
 	try {
 		*client_ptr = new exmdb_client();
-		gromox::exmdb_client.emplace(1, 1);
+		gromox::exmdb_client.emplace(5, 5);
 
 		// NOLINTNEXTLINE(clang-diagnostic-error)
 		if (gromox::exmdb_client_run(PKGSYSCONFDIR) != 0) {
 			delete *client_ptr;
 			*client_ptr = nullptr;
+			fprintf(stderr, "[EXMDB] exmdb_client_create client creation failed\n");
 			return EXIT_FAILURE;
 		}
 
 		if (!gromox::exmdb_client.has_value()) {
 			delete *client_ptr;
 			*client_ptr = nullptr;
+			fprintf(stderr, "[EXMDB] exmdb_client_create client creation failed\n");
 			return EXIT_FAILURE;
 		}
 
 		(*client_ptr)->impl = &gromox::exmdb_client.value();
+		fprintf(stderr, "[EXMDB] exmdbc_client_ping_store client is local\n");
 		return EXIT_SUCCESS;
 
 	} catch (...) {
 		if (client_ptr)
 			*client_ptr = nullptr;
+		fprintf(stderr, "[EXMDB] exmdb_client_create client creation failed\n");
 		return EXIT_FAILURE;
 	}
 }
 
 void exmdb_client_free(struct exmdb_client **client_ptr) {
+	fprintf(stderr, "[EXMDB] exmdb_client_free called ===================================================================\n");
 	if (client_ptr && *client_ptr) {
 		gromox::exmdb_client.reset();
 		delete *client_ptr;
@@ -207,7 +213,7 @@ void exmdb_client_free(struct exmdb_client **client_ptr) {
 
 int exmdbc_client_ping_store(const char *dir)
 {
-	fprintf(stderr, "[EXMDBC] exmdbc_client_ping_store client is remote\n");
+	fprintf(stderr, "[EXMDB] exmdbc_client_ping_store called ===================================================================\n");
 	return exmdb_client_remote::ping_store(dir);
 }
 

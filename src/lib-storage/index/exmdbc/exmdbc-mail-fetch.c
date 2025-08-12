@@ -360,7 +360,7 @@ static int exmdbc_mail_send_fetch(struct mail *_mail, enum mail_fetch_field fiel
 			mail_set_expunged(_mail);
 			return -1;
 			}
-	} else if (mbox->client_box == NULL) {
+	} else if (mbox->selected == FALSE) {
 		/* opened as save-only. we'll need to fetch the mail,
 		   so actually SELECT/EXAMINE the mailbox */
 		i_assert(mbox->box.opened);

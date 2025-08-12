@@ -249,9 +249,6 @@ static int exmdbc_mailbox_exists(struct mailbox *box, bool auto_boxes, enum mail
 int exmdbc_mailbox_select(struct exmdbc_mailbox *mbox) {
 	i_debug("[exmdbc] exmdbc_mailbox_select called\n");
 
-
-	i_assert(mbox->client_box == NULL);
-
 	if (exmdbc_mailbox_has_modseqs(mbox)) {
 		if (!array_is_created(&mbox->rseq_modseqs))
 			i_array_init(&mbox->rseq_modseqs, 32);
@@ -269,6 +266,7 @@ int exmdbc_mailbox_select(struct exmdbc_mailbox *mbox) {
 
 	mbox->exists_count = folder_meta.num_messages;
 	mbox->exists_received = TRUE;
+	mbox->selected = TRUE;
 
 	exmdbc_mailbox_select_finish(mbox);
 	return 0;
@@ -318,6 +316,7 @@ static void exmdbc_mailbox_close(struct mailbox *box) {
 	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
 	exmdbc_mail_fetch_flush(mbox);
 
+	mbox->selected = FALSE;
 	if (array_is_created(&mbox->rseq_modseqs))
 		array_free(&mbox->rseq_modseqs);
 	if (mbox->sync_view != NULL)
@@ -385,7 +384,31 @@ static int exmdbc_mailbox_delete(struct mailbox *box) {
 
 static int exmdbc_mailbox_get_metadata(struct mailbox *box, enum mailbox_metadata_items items, struct mailbox_metadata *metadata_r) {
 	i_debug("[exmdbc] exmdbc_mailbox_get_metadata called\n");
-	return -1;
+	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
+	if ((items & MAILBOX_METADATA_GUID) != 0) {
+		T_BEGIN {
+			string_t *s = t_str_new(64);
+			str_printfa(s, "exmdbc:%s:%"PRIu64, box->list->ns->user->username, mbox->folder_id);
+			mail_generate_guid_128_hash(str_c(s), metadata_r->guid);
+		} T_END;
+		items &= ENUM_NEGATE(MAILBOX_METADATA_GUID);
+	}
+
+	if ((items & MAILBOX_METADATA_BACKEND_NAMESPACE) != 0) {
+		/* exmdbc has no separate remote namespace mapping:
+		   return empty prefix and the real namespace type. */
+		metadata_r->backend_ns_prefix = "";
+		metadata_r->backend_ns_type = box->list->ns->type;
+		items &= ENUM_NEGATE(MAILBOX_METADATA_BACKEND_NAMESPACE);
+	}
+
+	/* Everything else (sizes, first_save_date, cache/precache fields)
+	   is handled by the index layer. */
+	if (items != 0) {
+		if (index_mailbox_get_metadata(box, items, metadata_r) < 0)
+			return -1;
+	}
+	return 0;
 }
 
 static void exmdbc_notify_changes(struct mailbox *box) {
@@ -395,7 +418,13 @@ static void exmdbc_notify_changes(struct mailbox *box) {
 
 static bool exmdbc_is_inconsistent(struct mailbox *box) {
 	i_debug("[exmdbc] exmdbc_is_inconsistent called\n");
-	return FALSE;
+	struct exmdbc_mailbox *mbox = EXMDBC_MAILBOX(box);
+
+	if (box->view != NULL &&
+		mail_index_view_is_inconsistent(box->view))
+		return TRUE;
+
+	return mbox->storage->client == NULL ? FALSE : !mbox->selected;
 }
 
 void exmdbc_mailbox_run(struct exmdbc_mailbox *mbox)

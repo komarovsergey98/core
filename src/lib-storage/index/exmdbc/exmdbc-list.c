@@ -318,6 +318,8 @@ static int exmdbc_list_init(struct mailbox_list *_list, const char **error_r)
 	struct exmdbc_mailbox_list *list = (struct exmdbc_mailbox_list *)_list;
 
 	exmdbc_storage_client_create(_list, &list->client, error_r);
+	if (list->client->client == NULL)
+		return -1;
 	list->client->_list = list;
 
 	if ((_list->ns->flags & NAMESPACE_FLAG_UNUSABLE) != 0) {
