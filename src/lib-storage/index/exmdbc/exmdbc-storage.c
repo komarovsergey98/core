@@ -42,7 +42,7 @@ static void exmdbc_client_free(struct exmdb_client * client)
 }
 
 static int exmdbc_storage_create(struct mail_storage *_storage,
-                                 const struct mail_namespace *ns,
+                                 struct mail_namespace *ns,
                                  const char **error_r)
 {
 	i_debug("[exmdbc] exmdbc_storage_create called\n");
@@ -109,13 +109,13 @@ static void exmdbc_storage_destroy(struct mail_storage *_storage)
 	i_info("exmdbc_storage_destroy(): storage for user %s cleaned up",
 	       _storage->user ? _storage->user->username : "(unknown)");
 }
-static int exmdbc_storage_add_list(struct mail_storage *_storage,
+
+static void exmdbc_storage_add_list(struct mail_storage *_storage,
 								   struct mailbox_list *list)
 {
 	i_debug("[exmdbc] exmdbc_storage_destroy called\n");
 	struct exmdbc_storage *_s = (struct exmdbc_storage *)_storage;
 	_s->client->_list = (struct exmdbc_mailbox_list *)list;
-	return 0;
 }
 
 
