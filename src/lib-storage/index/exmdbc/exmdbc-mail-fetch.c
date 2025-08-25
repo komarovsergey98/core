@@ -574,7 +574,7 @@ void exmdbc_mail_init_stream(struct exmdbc_mail *mail)
     fprintf(stderr, "[EXMDBC] exmdbc_mail_init_stream called (dummy)\n");
 	struct index_mail *imail = &mail->imail;
 	struct mail *_mail = &imail->mail.mail;
-	struct imapc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
+	//struct imapc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct istream *input;
 	uoff_t size;
 	int ret;
