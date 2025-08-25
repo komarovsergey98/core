@@ -80,7 +80,7 @@ exmdbc_save_alloc(struct mailbox_transaction_context *t)
 	return t->save_ctx;
 }
 
-int create_temp_file(const char **path_r)
+static int create_temp_file(char **path_r)
 {
 	static char template[] = "/tmp/exmdbc_msg_XXXXXX";
 	char *path = strdup(template); // Копія, яку можна модифікувати
