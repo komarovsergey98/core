@@ -557,7 +557,7 @@ bool exmdbc_mail_prefetch(struct mail *_mail)
     const char *const *headers = NULL;
 
     if (data->access_part != 0) {
-        exmdbc_mail_try_init_stream_from_cache(mail);
+        exmdbc_mail_try_init_stream_from_cache(exmdbc_mail);
     }
 
     if (fields != 0 || headers != NULL) T_BEGIN {
