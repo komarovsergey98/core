@@ -83,7 +83,7 @@ exmdbc_mailbox_fetch_state(struct exmdbc_mailbox *mbox, uint32_t first_uid)
 	mbox->state_fetching_uid1 = first_uid == 1;
 
 	// if (index_mailbox_want_full_sync(&mbox->box, MAILBOX_SYNC_FLAG_FORCE_RESYNC))
-		exmdbc_mailbox_sync(mbox);
+	// 	exmdbc_mailbox_sync(mbox);
 
 
 	mbox->state_fetching_uid1 = FALSE;
