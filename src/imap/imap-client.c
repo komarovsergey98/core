@@ -68,6 +68,20 @@ static void client_idle_timeout(struct client *client)
 		ioloop_time - client->last_input));
 }
 
+static void log_client_command(const struct client_command_context *cmd)
+{
+	const char *tag  = cmd && cmd->tag  ? cmd->tag  : "";
+	const char *name = cmd && cmd->name ? cmd->name : "";
+	const char *args = cmd && cmd->human_args ? cmd->human_args : "";
+
+	string_t *s = t_str_new(256);
+	if (*tag)  { str_append(s, tag);  if (*name || *args) str_append_c(s, ' '); }
+	if (*name) { str_append(s, name); if (*args)         str_append_c(s, ' '); }
+	if (*args) str_append(s, args);
+
+	i_debug("IMAP CMD: %s", str_c(s));  /* або i_info(...) якщо треба бачити без mail_debug */
+}
+
 static void client_init_urlauth(struct client *client)
 {
 	struct imap_urlauth_config config;
@@ -849,6 +863,7 @@ void client_args_finished(struct client_command_context *cmd,
 	imap_write_args_for_human(str, args);
 	cmd->human_args = p_strdup(cmd->pool, str_c(str));
 	event_add_str(cmd->event, "cmd_human_args", cmd->human_args);
+	log_client_command(cmd);
 }
 
 static struct client_command_context *
