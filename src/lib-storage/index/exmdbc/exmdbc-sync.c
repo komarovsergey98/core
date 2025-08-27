@@ -178,24 +178,3 @@ struct mailbox_sync_context * exmdbc_mailbox_sync_init(struct mailbox *box, enum
 
 	return index_mailbox_sync_init(box, flags, ret < 0);
 }
-
-bool exmdbc_mailbox_sync_next(struct mailbox_sync_context *_ctx, struct mailbox_sync_rec *sync_rec_r)
-{
-	struct index_mailbox_sync_context *ctx =
-		(struct index_mailbox_sync_context *)_ctx;
-	const struct seq_range *range;
-	unsigned int count;
-
-	if (ctx->failed)
-		return FALSE;
-
-	range = array_get(&ctx->flag_updates, &count);
-	if (ctx->flag_update_idx < count) {
-		sync_rec_r->type = MAILBOX_SYNC_TYPE_FLAGS;
-		sync_rec_r->seq1 = range[ctx->flag_update_idx].seq1;
-		sync_rec_r->seq2 = range[ctx->flag_update_idx].seq2;
-		ctx->flag_update_idx++;
-		return TRUE;
-	}
-	return index_mailbox_sync_next(_ctx, sync_rec_r);
-}
