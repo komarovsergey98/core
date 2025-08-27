@@ -557,7 +557,7 @@ bool exmdbc_mail_prefetch(struct mail *_mail)
     const char *const *headers = NULL;
 
     if (data->access_part != 0) {
-        exmdbc_mail_try_init_stream_from_cache(mail);
+        exmdbc_mail_try_init_stream_from_cache(exmdbc_mail);
     }
 
     if (fields != 0 || headers != NULL) T_BEGIN {
@@ -574,7 +574,7 @@ void exmdbc_mail_init_stream(struct exmdbc_mail *mail)
     fprintf(stderr, "[EXMDBC] exmdbc_mail_init_stream called (dummy)\n");
 	struct index_mail *imail = &mail->imail;
 	struct mail *_mail = &imail->mail.mail;
-	struct imapc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
+	//struct imapc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct istream *input;
 	uoff_t size;
 	int ret;

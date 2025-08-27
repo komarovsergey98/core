@@ -55,6 +55,7 @@ struct message_properties {
     uint32_t size;
 };
 
+struct exmdb_message_info;
 struct exmdbc_search_spec {
 	/* flags */
 	uint8_t want_seen;    /* SEEN */
