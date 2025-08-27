@@ -1033,6 +1033,7 @@ int exmdbc_client_copy_message(struct exmdb_client *client, uint64_t src_message
 	delete eid;
 	return 0;
 }
+
 static const RESTRICTION*
 build_restriction(const exmdbc_search_spec *spec,
                   std::vector<SRestriction>         &nodes,
@@ -1072,8 +1073,10 @@ build_restriction(const exmdbc_search_spec *spec,
 
     //UID range via PidTagMid GE/LE
     if (spec->uid_lo || spec->uid_hi) {
-        auto lo = (std::uint64_t)(spec->uid_lo ? spec->uid_lo : 0);
-        auto hi = (std::uint64_t)(spec->uid_hi ? spec->uid_hi : 0xFFFFFFFFULL);
+    	eid_t lo = rop_util_make_eid_ex(1, spec->uid_lo ? spec->uid_lo : 0);
+    	eid_t hi = spec->uid_hi ? rop_util_make_eid_ex(1, spec->uid_hi)
+								: (eid_t)0xFFFFFFFFFFFFFFFFull;
+
 
         SPropertyRestriction ge{};
         ge.relop   = RELOP_GE;
