@@ -23,6 +23,7 @@
 
 int exmdbc_list_fill_mailbox_info(struct exmdbc_mailbox_list *list, struct exmdbc_mailbox_list_iterate_context *ctx)
 {
+	i_debug("[exmdbc] exmdbc_list_fill_mailbox_info called\n");
 	struct exmdbc_folder_dto tmp_array[128];
 
 	const char *username = list->list.ns->user->username;
@@ -97,22 +98,7 @@ int exmdbc_list_refresh(struct exmdbc_mailbox_list *list, struct exmdbc_mailbox_
 	list->last_refreshed_mailboxes = ioloop_time;
 	//TODO: EXMDBC
 	// exmdbc_list_delete_unused_indexes(list);
-
 	return 0;
-
-
-	// //---------------------------------
-	// unsigned int count = 0;
-	//
-	// const char *user = list->list.ns->user->username;
-	// mailbox_tree_deinit(&list->mailboxes);
-	// list->mailboxes = mailbox_tree_init(mail_namespace_get_sep(list->list.ns));
-	// mailbox_tree_set_parents_nonexistent(list->mailboxes);
-	//
-	// if (exmdbc_list_fill_mailbox_info(ctx->ctx.pool, list->client->client, user, ctx->mailboxes, MAX_MAILBOXES, &count) < 0)
-	// 	return -1;
-	//
-	// ctx->mailbox_count = count;
 }
 
 
