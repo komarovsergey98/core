@@ -17,6 +17,11 @@ AM_CPPFLAGS = \
 	-I$(srcdir) \
 	$(libHX_CFLAGS)
 
+AM_CFLAGS = -Wall -Wextra \
+	-Werror=incompatible-pointer-types \
+	-Werror=int-conversion \
+	-Werror=implicit-function-declaration
+
 AM_CXXFLAGS = -std=c++20
 
 libstorage_exmdbc_la_LDFLAGS = -L/home/sergey/grommunio/gromox/.libs
