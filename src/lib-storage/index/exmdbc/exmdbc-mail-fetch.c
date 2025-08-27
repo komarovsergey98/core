@@ -548,24 +548,25 @@ bool exmdbc_mail_prefetch(struct mail *_mail)
 {
     fprintf(stderr, "[EXMDBC] exmdbc_mail_prefetch called (dummy)\n");
 
-    struct exmdbc_mail *exmdbc_mail = EXMDBC_MAIL(_mail);
-    struct index_mail *mail = &exmdbc_mail->imail;
-    struct exmdbc_mailbox *mbox = (struct exmdbc_mailbox *)_mail->box;
-	struct index_mail_data *data = &mail->data;
-
-    enum mail_fetch_field fields = exmdbc_mail_get_wanted_fetch_fields(exmdbc_mail);
+	struct exmdbc_mail *mail = EXMDBC_MAIL(_mail);
+	struct index_mail_data *data = &mail->imail.data;
     const char *const *headers = NULL;
 
-    if (data->access_part != 0) {
-        exmdbc_mail_try_init_stream_from_cache(exmdbc_mail);
-    }
+	exmdbc_mail_update_access_parts(&mail->imail);
+	if (mail->imail.data.access_part != 0)
+		exmdbc_mail_try_init_stream_from_cache(mail);
 
-    if (fields != 0 || headers != NULL) T_BEGIN {
-        if (exmdbc_mail_send_fetch(_mail, fields, headers) > 0)
-            mail->data.prefetch_sent = TRUE;
-    } T_END;
-
-    return !mail->data.prefetch_sent;
+	enum mail_fetch_field fields = exmdbc_mail_get_wanted_fetch_fields(mail);
+	if (data->wanted_headers != NULL && data->stream == NULL &&
+		(fields & MAIL_FETCH_STREAM_HEADER) == 0 &&
+		!exmdbc_mail_has_headers_in_cache(&mail->imail, data->wanted_headers)) {
+			fields |= MAIL_FETCH_STREAM_HEADER;
+		}
+	if (fields != 0) T_BEGIN {
+		if (exmdbc_mail_send_fetch(_mail, fields, headers) > 0)
+			mail->imail.data.prefetch_sent = TRUE;
+	} T_END;
+	return !mail->imail.data.prefetch_sent;
 }
 
 // Stream init (currently dummy)
@@ -574,7 +575,6 @@ void exmdbc_mail_init_stream(struct exmdbc_mail *mail)
     fprintf(stderr, "[EXMDBC] exmdbc_mail_init_stream called (dummy)\n");
 	struct index_mail *imail = &mail->imail;
 	struct mail *_mail = &imail->mail.mail;
-	//struct imapc_mailbox *mbox = EXMDBC_MAILBOX(_mail->box);
 	struct istream *input;
 	uoff_t size;
 	int ret;
